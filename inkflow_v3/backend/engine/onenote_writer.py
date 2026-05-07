@@ -228,39 +228,44 @@ def _skeletonize(binary_img):
 
 def _skeleton_to_multi_strokes(skeleton):
     """
-    Overhauled stroke extraction for German characters.
-    Isolates dots and fine details by splitting strokes more aggressively.
+    Robust stroke extraction for German characters.
+    Uses connected components to ensure separate parts (like dots) stay separate.
     """
-    pts = list(zip(*np.where(skeleton > 0)))
-    if not pts: return []
-    pts = [[c, r] for r, c in pts]
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
 
-    strokes = []
-    # Smaller gap for better detail on dots
-    MAX_GAP = 5.0
+    all_strokes = []
+    # label 0 is background
+    for label in range(1, num_labels):
+        comp_mask = (labels == label).astype(np.uint8)
+        pts = list(zip(*np.where(comp_mask > 0)))
+        if not pts: continue
+        pts = [[c, r] for r, c in pts]
 
-    while pts:
-        # Start at top-most point to find dots first or consistently
-        pts.sort(key=lambda p: (p[1], p[0]))
-        current = pts.pop(0)
-        current_stroke = [tuple(current)]
+        # Within each component, still use nearest-neighbor to find the path
+        MAX_GAP = 5.0
+        while pts:
+            pts.sort(key=lambda p: (p[0], p[1])) # left to right
+            current = pts.pop(0)
+            current_stroke = [tuple(current)]
 
-        while True:
-            if not pts: break
-            sq_distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
-            idx = np.argmin(sq_distances)
-            dist = math.sqrt(sq_distances[idx])
-            if dist > MAX_GAP: break
-            current = pts.pop(idx)
-            current_stroke.append(tuple(current))
+            while True:
+                if not pts: break
+                sq_distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
+                idx = np.argmin(sq_distances)
+                if math.sqrt(sq_distances[idx]) > MAX_GAP: break
+                current = pts.pop(idx)
+                current_stroke.append(tuple(current))
 
-        if len(current_stroke) >= 1:
-            # Preserve details but don't over-saturate
-            if len(current_stroke) > 50:
-                step = len(current_stroke) // 50
-                current_stroke = current_stroke[::step]
-            strokes.append(current_stroke)
-    return strokes
+            if len(current_stroke) >= 1:
+                # Detail preservation
+                if len(current_stroke) > 50:
+                    step = len(current_stroke) // 50
+                    current_stroke = current_stroke[::step]
+                all_strokes.append(current_stroke)
+
+    # Sort strokes by x-coordinate to write naturally
+    all_strokes.sort(key=lambda s: s[0][0])
+    return all_strokes
 
 
 def _fallback_path(w, h):
@@ -270,19 +275,20 @@ def _fallback_path(w, h):
 def _draw_strokes(
     job: WriteJob,
     strokes: list[list[tuple[int, int]]],
-    speed_cfg: float,
+    words_per_second: float,
     translator: CoordinateTranslator,
     origin_x: int,
     origin_y: int,
     pressure_base: int = 512,
 ):
-    """
-    speed_cfg: words per second (target)
-    A word is approx 5 chars. So 5 words/sec = 25 chars/sec.
-    """
     if not strokes: return
 
-    # Total points estimate for delay calculation
+    # Total characters estimate (1 word = 5 chars)
+    target_chars_per_sec = words_per_second * 5
+    # Total points roughly 10-20 per char
+    # If speed is 5 w/s, that's 25 chars/s.
+    # To hit that, we need very small delays.
+
     vx, vy, vw, vh = _screen_metrics()
 
     def get_coords(px, py):
@@ -291,17 +297,15 @@ def _draw_strokes(
             return int(tx), int(ty)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
-    # Calculate delay to hit target words/sec
-    # (Simplified: if speed > 3 words/sec, we basically use 0 delay)
-    is_ultra = speed_cfg >= 3.0
-    point_delay = 0.0001 if is_ultra else (0.1 / (speed_cfg * 5))
+    # Delay heuristic: 1.0 / (chars_per_sec * avg_points_per_char)
+    # At 5 words/sec, we want 0 delay for maximum speed.
+    delay = 0 if words_per_second >= 4.0 else (0.5 / (target_chars_per_sec * 5))
 
     for stroke in strokes:
         if job.cancelled: break
         if not stroke: continue
 
-        # Smoothing
-        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3 if is_ultra else 4)
+        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3 if words_per_second > 2.0 else 4)
 
         # Pen down
         fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
@@ -311,12 +315,12 @@ def _draw_strokes(
             if job.cancelled: break
             ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
             input_mgr.move_to(ax, ay, pressure=pressure_base)
-            if point_delay > 0.0005: time.sleep(point_delay)
+            if delay > 0.0001: time.sleep(delay)
 
         # Pen up
         lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        if point_delay > 0.001: time.sleep(point_delay * 2)
+        if delay > 0.0005: time.sleep(delay * 2)
 
 
 # Characters that extend BELOW the baseline
@@ -356,11 +360,16 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
-        # Precision Line Alignment Method
-        # Use first_line_y as the base if available
+        # Primary baseline from precision calibration
         first_line_y = getattr(calibration, "first_line_y", 0)
         start_x = 0
-        start_y = first_line_y if first_line_y > 0 else getattr(calibration, "line_top_offset", 0)
+        # If we have first_line_y, we use it as the start.
+        # But wait, cursor_y should be relative to the write area?
+        # Actually CoordinateTranslator.to_windows_coordinates adds write_area_x/y.
+        # So start_y should be relative to the write area.
+
+        # If first_line_y is in screen coordinates, we need to subtract write_area_y
+        rel_start_y = max(0, first_line_y - calibration.write_area_y) if first_line_y > 0 else 0
 
         area_w = calibration.write_area_width
         area_h = calibration.write_area_height
@@ -372,9 +381,9 @@ def write_text_to_screen(
         word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
-        cursor_y = start_y
+        cursor_y = rel_start_y
         job.current_line = 0
-        job.message = f"Engine V5.0 (Ultra) - {words_per_second} w/s"
+        job.message = f"V6.0 Ultra-Speed — {words_per_second} w/s"
 
         if not prepare_onenote():
             job.status = "error"
@@ -382,20 +391,22 @@ def write_text_to_screen(
             return
         
         time.sleep(0.1)
-        scroll_threshold_y = area_h * 0.75
+        scroll_threshold_y = area_h * 0.8
         last_focus_check = time.time()
 
         for word in words:
             job.wait_if_paused()
             if job.cancelled: break
 
-            if time.time() - last_focus_check > 2.0:
-                curr_hwnd = win32gui.GetForegroundWindow()
-                title = win32gui.GetWindowText(curr_hwnd).lower()
-                if "onenote" not in title:
-                    job.message = "Focus lost! Pausing..."
-                    job.pause()
-                last_focus_check = time.time()
+            # Periodic focus check (don't do it too often at high speed)
+            if words_per_second < 3.0 or job.chars_done % 10 == 0:
+                if time.time() - last_focus_check > 2.0:
+                    curr_hwnd = win32gui.GetForegroundWindow()
+                    title = win32gui.GetWindowText(curr_hwnd).lower()
+                    if "onenote" not in title:
+                        job.message = "Focus lost! Pausing..."
+                        job.pause()
+                    last_focus_check = time.time()
 
             ww = 0
             for char in word:
@@ -436,6 +447,7 @@ def write_text_to_screen(
                 cw = int(variant.width * scale)
                 ch = int(variant.height * scale)
 
+                # Baseline is at bottom of line
                 baseline_y = cursor_y + line_h
                 baseline_offset = _compute_baseline_offset(char, ch, variant.baseline_offset)
                 y_pos = baseline_y - ch + baseline_offset
@@ -451,7 +463,7 @@ def write_text_to_screen(
                 _draw_strokes(
                     job=job,
                     strokes=strokes,
-                    speed_cfg=words_per_second,
+                    words_per_second=words_per_second,
                     translator=translator,
                     origin_x=cursor_x,
                     origin_y=y_pos + char_v_jitter,
@@ -465,7 +477,7 @@ def write_text_to_screen(
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Ultra-Finish!"
+        job.message = "Ultra-Speed Finish!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Ultra-Error: {exc}"
+        job.message = f"Error: {exc}"
