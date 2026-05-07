@@ -239,13 +239,39 @@ def _skeletonize(binary_img):
 
 
 def _skeleton_to_path(skeleton):
-    pts = [(c, r) for r, c in zip(*np.where(skeleton > 0))]
-    # Basic sorting to keep stroke order somewhat sane
-    pts.sort(key=lambda p: (p[0], p[1]))
-    if len(pts) > 150:
-        step = max(1, len(pts) // 150)
-        pts = pts[::step]
-    return pts
+    """
+    Extracts a smooth path from a skeleton using a greedy nearest-neighbor approach.
+    This prevents the 'up and down' jitter caused by simple sorting.
+    """
+    pts = list(zip(*np.where(skeleton > 0)))
+    if not pts:
+        return []
+
+    # Convert to list of [x, y] for easier handling (OpenCV uses [y, x] in where)
+    pts = [[c, r] for r, c in pts]
+
+    path = []
+    # Start at the leftmost point
+    pts.sort(key=lambda p: p[0])
+    current = pts.pop(0)
+    path.append(tuple(current))
+
+    while pts:
+        # Find nearest neighbor
+        distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
+        idx = np.argmin(distances)
+
+        # If the jump is too far, it's likely a different stroke (not handled here yet)
+        # but for single chars, it's usually fine.
+        current = pts.pop(idx)
+        path.append(tuple(current))
+
+    # Downsample
+    if len(path) > 150:
+        step = max(1, len(path) // 150)
+        path = path[::step]
+
+    return path
 
 
 def _fallback_path(w, h):
@@ -300,6 +326,16 @@ def _draw_stroke(
     time.sleep(base_delay)
 
 
+DESCENDERS = set("gjpqyÖÄÜöäüß")
+
+def _compute_baseline_offset(char: str, char_height: int, variant_baseline: int) -> int:
+    if variant_baseline != 0:
+        return variant_baseline
+    if char in DESCENDERS:
+        return -int(char_height * 0.25)
+    return 0
+
+
 def write_text_to_screen(
     job: WriteJob,
     profile,
@@ -344,7 +380,7 @@ def write_text_to_screen(
             job.message = "Fehler: OneNote-Fenster wurde nicht gefunden. Bitte OneNote öffnen!"
             return
         
-        job.message = "OneNote bereit. Schreibe..."
+        job.message = "Engine V3.1 Active. Schreibe..."
         time.sleep(0.3)
 
         for word in words:
@@ -388,7 +424,11 @@ def write_text_to_screen(
                 cw = int(variant.width * scale * calibration.zoom_level)
                 ch = int(variant.height * scale * calibration.zoom_level)
 
-                # Correctly define vy within the scope of the character processing
+                # Baseline correction
+                baseline_y = cursor_y + line_h
+                baseline_offset = _compute_baseline_offset(char, ch, variant.baseline_offset)
+                y_pos = baseline_y - ch + baseline_offset
+
                 char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
                 points = extract_stroke_path(variant.image_path, cw, ch)
@@ -398,7 +438,7 @@ def write_text_to_screen(
                     speed=speed,
                     translator=translator,
                     origin_x=cursor_x,
-                    origin_y=cursor_y + char_v_jitter,
+                    origin_y=y_pos + char_v_jitter,
                     point_delay_s=point_delay_s,
                 )
                 cursor_x += cw + int(profile.char_spacing * calibration.zoom_level)
