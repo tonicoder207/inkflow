@@ -468,3 +468,4 @@ def write_text_to_screen(
     except Exception as exc:
         job.status = "error"
         job.message = f"Ultra-Error: {exc}"
+        job.message = f"Error: {exc}"
