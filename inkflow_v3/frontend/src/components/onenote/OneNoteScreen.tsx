@@ -45,6 +45,10 @@ export default function OneNoteScreen() {
     inkflow.onCalibrationPoints(async (points: CalibrationPoint[]) => {
       setCalWaiting(false);
       try {
+        // Find line points if they exist
+        const pFirst = points.find(p => p.label === "first_line");
+        const pSecond = points.find(p => p.label === "second_line");
+
         // Keep this temporary default in sync with backend compute fallback.
         const cal: CalibrationProfile = {
           id: "", name: calName,
@@ -52,7 +56,8 @@ export default function OneNoteScreen() {
           write_area_x: 0, write_area_y: 0,
           write_area_width: 1200, write_area_height: 800,
           line_height_px: 26, zoom_level: 1.0, transform_matrix: [], created_at: "",
-          first_line_y: 0, second_line_y: 0,
+          first_line_y: pFirst?.y ?? 0,
+          second_line_y: pSecond?.y ?? 0,
         };
         const saved = await createCalibration(cal);
         await computeCalibration(saved.id);
@@ -206,10 +211,13 @@ export default function OneNoteScreen() {
           </div>
 
           {calWaiting && (
-            <div className="glass rounded-xl p-3 mb-2 text-center animate-fade-in">
-              <Crosshair size={20} className="mx-auto mb-2 text-accent-gold animate-pulse-soft"/>
-              <p className="text-xs text-ink-300">Transparentes Overlay ist geöffnet</p>
-              <p className="text-[11px] text-ink-500 mt-1">Klicke 4 Ecken: oben-links, oben-rechts, unten-rechts, unten-links</p>
+            <div className="glass rounded-xl p-3 mb-2 text-center animate-fade-in text-accent-gold">
+              <Crosshair size={20} className="mx-auto mb-2 animate-pulse-soft"/>
+              <p className="text-xs font-bold">Overlay aktiv!</p>
+              <p className="text-[10px] text-ink-300 mt-1 leading-tight">
+                1. Klicke 4 Ecken (TL, TR, BR, BL)<br/>
+                2. Klicke Grundlinie 1 & 2
+              </p>
             </div>
           )}
 
@@ -245,8 +253,10 @@ export default function OneNoteScreen() {
         {/* Speed */}
         <div>
           <p className="label flex justify-between">
-            <span>Schreibgeschwindigkeit</span>
-            <span className="text-accent-gold font-mono">{wordsPerSecond} w/s</span>
+            <span>Geschwindigkeit</span>
+            <span className={clsx("font-mono", wordsPerSecond >= 3 ? "text-red-400" : "text-accent-gold")}>
+              {wordsPerSecond} w/s
+            </span>
           </p>
           <div className="flex items-center gap-2">
             <input
@@ -256,7 +266,9 @@ export default function OneNoteScreen() {
               onChange={e => setWordsPerSecond(parseFloat(e.target.value))}
             />
           </div>
-          <p className="text-[10px] text-ink-500 mt-1">Bis zu 5 Wörter pro Sekunde (Ultra Mode)</p>
+          <p className="text-[10px] text-ink-500 mt-1">
+            {wordsPerSecond >= 4 ? "ULTRA MODE ACTIVATED 🚀" : "Regler für Schreib-Speed"}
+          </p>
         </div>
 
         {/* Scaling */}

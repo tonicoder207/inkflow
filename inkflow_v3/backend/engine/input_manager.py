@@ -32,7 +32,7 @@ class MOUSEINPUT(ctypes.Structure):
         ("mouseData", wintypes.DWORD),
         ("dwFlags", wintypes.DWORD),
         ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_void_p),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
     ]
 
 class INPUT_UNION(ctypes.Union):
@@ -41,7 +41,6 @@ class INPUT_UNION(ctypes.Union):
 class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", INPUT_UNION)]
 
-# Pen Injection Structures
 class POINTER_INFO(ctypes.Structure):
     _fields_ = [
         ("pointerType", wintypes.DWORD), ("pointerId", ctypes.c_uint32),
@@ -96,7 +95,6 @@ class InputManager:
         p.pointerInfo.pointerFlags = flags
         p.pointerInfo.dwTime = 0
         p.pressure = int(pressure)
-
         self.frame_id += 1
         return ctypes.windll.user32.InjectPointerInput(1, ctypes.byref(self._pen_info))
 
@@ -107,7 +105,7 @@ class InputManager:
         extra = ctypes.c_ulong(0)
         flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_VIRTUALDESK
         if is_absolute: flags |= MOUSEEVENTF_ABSOLUTE
-        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.addressof(extra))
+        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.pointer(extra))
         input_obj = INPUT(0, INPUT_UNION(mi=mi))
         return ctypes.windll.user32.SendInput(1, ctypes.byref(input_obj), ctypes.sizeof(input_obj))
 
@@ -118,7 +116,7 @@ class InputManager:
         extra = ctypes.c_ulong(0)
         flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_LEFTDOWN
         if is_absolute: flags |= MOUSEEVENTF_ABSOLUTE
-        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.addressof(extra))
+        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.pointer(extra))
         input_obj = INPUT(0, INPUT_UNION(mi=mi))
         return ctypes.windll.user32.SendInput(1, ctypes.byref(input_obj), ctypes.sizeof(input_obj))
 
@@ -129,6 +127,6 @@ class InputManager:
         extra = ctypes.c_ulong(0)
         flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_LEFTUP
         if is_absolute: flags |= MOUSEEVENTF_ABSOLUTE
-        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.addressof(extra))
+        mi = MOUSEINPUT(int(x), int(y), 0, flags, 0, ctypes.pointer(extra))
         input_obj = INPUT(0, INPUT_UNION(mi=mi))
         return ctypes.windll.user32.SendInput(1, ctypes.byref(input_obj), ctypes.sizeof(input_obj))

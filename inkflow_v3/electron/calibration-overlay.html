@@ -219,12 +219,12 @@
     const { ipcRenderer } = require('electron');
 
     const steps = [
-      { label: "top_left",     instruction: "Klicke OBEN LINKS auf die OneNote-Schreibfläche" },
-      { label: "top_right",    instruction: "Klicke OBEN RECHTS auf die OneNote-Schreibfläche" },
-      { label: "bottom_right", instruction: "Klicke UNTEN RECHTS auf die OneNote-Schreibfläche" },
-      { label: "bottom_left",  instruction: "Klicke UNTEN LINKS auf die OneNote-Schreibfläche" },
-      { label: "first_line",   instruction: "Klicke genau auf die ERSTE Schreiblinie (Grundlinie)" },
-      { label: "second_line",  instruction: "Klicke genau auf die ZWEITE Schreiblinie (Grundlinie)" },
+      { label: "top_left",     instruction: "Klicke OBEN LINKS", sub: "Startpunkt der Schreibfläche" },
+      { label: "top_right",    instruction: "Klicke OBEN RECHTS", sub: "Rechte Grenze festlegen" },
+      { label: "bottom_right", instruction: "Klicke UNTEN RECHTS", sub: "Untere rechte Ecke" },
+      { label: "bottom_left",  instruction: "Klicke UNTEN LINKS", sub: "Untere linke Ecke" },
+      { label: "first_line",   instruction: "Klicke auf GRUNDLINIE 1", sub: "Klicke direkt auf die erste Schreiblinie" },
+      { label: "second_line",  instruction: "Klicke auf GRUNDLINIE 2", sub: "Klicke direkt auf die zweite Schreiblinie" },
     ];
 
     let currentStep = 0;
