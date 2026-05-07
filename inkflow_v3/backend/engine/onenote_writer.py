@@ -81,18 +81,27 @@ stroke_proc = StrokeProcessor()
 class LegacyPenInjector:
     def down(self, x: int, y: int, pressure: int = 512):
         vx, vy, vw, vh = _screen_metrics()
-        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-        input_mgr.down(ax, ay)
+        if input_mgr.use_pen_injection:
+            input_mgr.down(x, y, pressure=pressure)
+        else:
+            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+            input_mgr.down(ax, ay, pressure=pressure)
 
     def move(self, x: int, y: int, pressure: int = 512):
         vx, vy, vw, vh = _screen_metrics()
-        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-        input_mgr.move_to(ax, ay)
+        if input_mgr.use_pen_injection:
+            input_mgr.move_to(x, y, pressure=pressure)
+        else:
+            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+            input_mgr.move_to(ax, ay, pressure=pressure)
 
     def up(self, x: int, y: int):
         vx, vy, vw, vh = _screen_metrics()
-        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-        input_mgr.up(ax, ay)
+        if input_mgr.use_pen_injection:
+            input_mgr.up(x, y)
+        else:
+            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+            input_mgr.up(ax, ay)
 
 
 pen_injector = LegacyPenInjector()
@@ -150,9 +159,6 @@ def prepare_onenote() -> bool:
         win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
         win32gui.SetForegroundWindow(target_hwnd)
         time.sleep(0.3)
-
-        # User requested to remove the automated zoom typing as it interferes with textboxes.
-        # We only keep the window activation.
     except Exception:
         return False
     return True
@@ -267,9 +273,9 @@ def _skeleton_to_multi_strokes(skeleton):
             current_stroke.append(tuple(current))
 
         if len(current_stroke) > 1:
-            # Downsample
-            if len(current_stroke) > 100:
-                step = len(current_stroke) // 100
+            # Downsample for faster processing
+            if len(current_stroke) > 60:
+                step = len(current_stroke) // 60
                 current_stroke = current_stroke[::step]
             strokes.append(current_stroke)
 
@@ -288,42 +294,47 @@ def _draw_strokes(
     origin_x: int,
     origin_y: int,
     point_delay_s: float,
+    pressure: int = 512,
 ):
     if not strokes: return
 
-    speed_mul = {"slow": 1.7, "normal": 1.0, "fast": 0.65}.get(speed, 1.0)
-    base_delay = max(0.0005, point_delay_s * speed_mul)
+    # Boosted speed: less delay between points
+    speed_mul = {"slow": 1.0, "normal": 0.4, "fast": 0.1}.get(speed, 1.0)
+    base_delay = point_delay_s * speed_mul
     vx, vy, vw, vh = _screen_metrics()
 
-    def to_win(px, py):
+    def get_coords(px, py):
         tx, ty = translator.to_windows_coordinates(px, py)
+        if input_mgr.use_pen_injection:
+            return int(tx), int(ty)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
     for stroke in strokes:
         if job.cancelled: break
         if not stroke: continue
 
-        # Smoothing
+        # Reduced smoothing for speed, but keep Catmull-Rom for quality
         if len(stroke) >= 4:
-            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=4)
+            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3)
         else:
             smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=2)
 
         # Pen down
-        fx, fy = to_win(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
-        input_mgr.down(fx, fy)
-        time.sleep(base_delay)
+        fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
+        input_mgr.down(fx, fy, pressure=pressure)
+        if base_delay > 0: time.sleep(base_delay)
 
         for i in range(1, len(smoothed)):
             if job.cancelled: break
-            ax, ay = to_win(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
-            input_mgr.move_to(ax, ay)
-            time.sleep(base_delay / 2.0)
+            ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
+            input_mgr.move_to(ax, ay, pressure=pressure)
+            # Minimal sleep for high performance
+            if base_delay > 0.0005: time.sleep(base_delay / 4.0)
 
         # Pen up
-        lx, ly = to_win(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
+        lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        time.sleep(base_delay * 1.5) # Small pause between strokes
+        if base_delay > 0: time.sleep(base_delay)
 
 
 DESCENDERS = set("gjpqyÖÄÜöäüß")
@@ -343,10 +354,10 @@ def write_text_to_screen(
     text: str,
     speed: str = "normal",
     font_size_scale: float = 1.0,
-    size_variation: float = 0.10,
-    rotation_variation: float = 3.0,
-    vertical_jitter: float = 2.0,
-    point_delay_s: float = 0.005,
+    size_variation: float = 0.05,
+    rotation_variation: float = 2.0,
+    vertical_jitter: float = 1.0,
+    point_delay_s: float = 0.001,
     pressure: float = 0.7,
 ):
     if not HAS_NATIVE_EVENTS:
@@ -362,17 +373,17 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
-        # Baseline and scaling fixes
-        # Use calibration values to set the actual start position
+        # Better line recognition logic
+        # line_height_px should be the distance between two lines.
+        # we can use calibration.line_top_offset and calibration.line_bottom_offset if they exist.
+        line_top = getattr(calibration, "line_top_offset", 0)
+
         start_x = 0
-        # Start at 0 relative to write_area_y (CoordinateTranslator handles write_area_y offset)
-        start_y = 0
+        start_y = line_top
         area_w = calibration.write_area_width
 
-        # Adjust scaling: The user reports it's 3x too large.
-        # We also need to consider zoom_level.
-        # Let's try a more conservative base scale and respect calibration.zoom_level
-        effective_font_scale = (font_size_scale * 0.35) / max(0.1, calibration.zoom_level)
+        # Scaling: Use more direct scale since we have pen injection speed
+        effective_font_scale = (font_size_scale * 0.3) / max(0.1, calibration.zoom_level)
 
         line_h = int(calibration.line_height_px * font_size_scale)
         char_spacing = int(profile.char_spacing * calibration.zoom_level)
@@ -381,14 +392,14 @@ def write_text_to_screen(
         cursor_x = start_x
         cursor_y = start_y
         job.current_line = 0
-        job.message = "V3.2 Engine Ready. Writing..."
+        job.message = f"Engine V4.0 (Turbo) - {'Pen' if input_mgr.use_pen_injection else 'Mouse'}"
 
         if not prepare_onenote():
             job.status = "error"
             job.message = "OneNote window not found!"
             return
         
-        time.sleep(0.3)
+        time.sleep(0.2)
 
         for word in words:
             job.wait_if_paused()
@@ -436,14 +447,10 @@ def write_text_to_screen(
 
                 char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
-                # Use pre-computed strokes if available for better movement reproduction
+                # Use pre-computed strokes for maximum speed
                 if hasattr(variant, 'strokes') and variant.strokes:
-                    # Scale strokes to target size
-                    # variant.strokes are in pixels relative to the original variant image
                     sw, sh = variant.width, variant.height
-                    strokes = []
-                    for s in variant.strokes:
-                        strokes.append([(int(x / sw * cw), int(y / sh * ch)) for x, y in s])
+                    strokes = [[(int(x / sw * cw), int(y / sh * ch)) for x, y in s] for s in variant.strokes]
                 else:
                     strokes = extract_stroke_paths(variant.image_path, cw, ch)
 
@@ -455,6 +462,7 @@ def write_text_to_screen(
                     origin_x=cursor_x,
                     origin_y=y_pos + char_v_jitter,
                     point_delay_s=point_delay_s,
+                    pressure=int(pressure * 1024),
                 )
 
                 cursor_x += cw + char_spacing
@@ -462,10 +470,9 @@ def write_text_to_screen(
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
             cursor_x += word_sp
-            time.sleep(max(0.001, point_delay_s))
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Fertig!"
+        job.message = "Turbo-Finish!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Error: {exc}"
+        job.message = f"Turbo-Error: {exc}"

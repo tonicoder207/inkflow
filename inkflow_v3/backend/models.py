@@ -96,6 +96,8 @@ class CalibrationProfile(BaseModel):
     write_area_height: int = 800
     line_height_px: int = 40
     zoom_level: float = 1.0
+    line_top_offset: int = 0
+    line_bottom_offset: int = 0
     transform_matrix: list[list[float]] = []
     created_at: str = ""
     scaling_factor: float = 1.0
