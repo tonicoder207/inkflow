@@ -164,25 +164,6 @@ def prepare_onenote() -> bool:
     return True
 
 
-def _send_hotkey(modifiers: list[int], key: int):
-    for mod in modifiers:
-        win32api.keybd_event(mod, 0, 0, 0)
-    win32api.keybd_event(key, 0, 0, 0)
-    win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
-    for mod in reversed(modifiers):
-        win32api.keybd_event(mod, 0, win32con.KEYEVENTF_KEYUP, 0)
-
-
-def _send_key(key: int):
-    win32api.keybd_event(key, 0, 0, 0)
-    win32api.keybd_event(key, 0, win32con.KEYEVENTF_KEYUP, 0)
-
-
-def _type_text(text: str):
-    for ch in text:
-        _send_key(ord(ch.upper()))
-
-
 def _screen_metrics():
     if not HAS_NATIVE_EVENTS:
         return 0, 0, 1920, 1080
@@ -242,43 +223,34 @@ def _skeletonize(binary_img):
 def _skeleton_to_multi_strokes(skeleton):
     """
     Splits the skeleton into multiple strokes using a nearest-neighbor approach
-    with a distance threshold.
+    with a distance threshold. Optimized for German dots and fine details.
     """
     pts = list(zip(*np.where(skeleton > 0)))
     if not pts: return []
     pts = [[c, r] for r, c in pts]
 
     strokes = []
-    MAX_GAP = 12.0  # Pixels. If next point is further than this, start new stroke.
+    MAX_GAP = 8.0
 
     while pts:
-        # Start new stroke
         pts.sort(key=lambda p: (p[0], p[1]))
         current = pts.pop(0)
         current_stroke = [tuple(current)]
 
         while True:
             if not pts: break
-
-            # Find nearest neighbor
-            distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
-            idx = np.argmin(distances)
-            dist = math.sqrt(distances[idx])
-
-            if dist > MAX_GAP:
-                # End of this stroke
-                break
-
+            sq_distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
+            idx = np.argmin(sq_distances)
+            dist = math.sqrt(sq_distances[idx])
+            if dist > MAX_GAP: break
             current = pts.pop(idx)
             current_stroke.append(tuple(current))
 
-        if len(current_stroke) > 1:
-            # Downsample for faster processing
-            if len(current_stroke) > 60:
-                step = len(current_stroke) // 60
+        if len(current_stroke) >= 1:
+            if len(current_stroke) > 80:
+                step = len(current_stroke) // 80
                 current_stroke = current_stroke[::step]
             strokes.append(current_stroke)
-
     return strokes
 
 
@@ -294,12 +266,12 @@ def _draw_strokes(
     origin_x: int,
     origin_y: int,
     point_delay_s: float,
-    pressure: int = 512,
+    pressure_base: int = 512,
 ):
     if not strokes: return
 
-    # Boosted speed: less delay between points
-    speed_mul = {"slow": 1.0, "normal": 0.4, "fast": 0.1}.get(speed, 1.0)
+    # Boosted speed multipliers
+    speed_mul = {"slow": 1.2, "normal": 0.6, "fast": 0.2}.get(speed, 1.0)
     base_delay = point_delay_s * speed_mul
     vx, vy, vw, vh = _screen_metrics()
 
@@ -313,37 +285,60 @@ def _draw_strokes(
         if job.cancelled: break
         if not stroke: continue
 
-        # Reduced smoothing for speed, but keep Catmull-Rom for quality
+        # Human-like smoothing and interpolation
         if len(stroke) >= 4:
-            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3)
+            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=4)
         else:
-            smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=2)
+            smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=3)
 
-        # Pen down
+        # Pen down with micro-delay for contact
         fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
-        input_mgr.down(fx, fy, pressure=pressure)
-        if base_delay > 0: time.sleep(base_delay)
+        # Start light (human pressure dynamics)
+        p_val = int(pressure_base * 0.7)
+        input_mgr.down(fx, fy, pressure=p_val)
+        time.sleep(max(0.001, base_delay))
 
         for i in range(1, len(smoothed)):
             if job.cancelled: break
             ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
-            input_mgr.move_to(ax, ay, pressure=pressure)
-            # Minimal sleep for high performance
-            if base_delay > 0.0005: time.sleep(base_delay / 4.0)
+
+            # Dynamic pressure and velocity
+            # Velocity: slow down on curves
+            # Simple heuristic: change in angle
+            p1 = smoothed[i-1]
+            p2 = smoothed[i]
+            dist = math.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
+
+            # Pressure variation (sinusoidal)
+            t_prog = i / len(smoothed)
+            curr_p = int(pressure_base * (0.8 + 0.4 * math.sin(t_prog * math.pi)))
+
+            input_mgr.move_to(ax, ay, pressure=curr_p)
+
+            # Micro-delay based on distance and curve
+            move_delay = (base_delay / 2.0) * (dist / 2.0)
+            if move_delay > 0: time.sleep(min(0.005, move_delay))
 
         # Pen up
         lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        if base_delay > 0: time.sleep(base_delay)
+        time.sleep(max(0.002, base_delay * 1.5))
 
 
-DESCENDERS = set("gjpqyÖÄÜöäüß")
+# Characters that extend BELOW the baseline
+DESCENDERS = set("gjpqyß")
 
 def _compute_baseline_offset(char: str, char_height: int, variant_baseline: int) -> int:
+    """
+    Returns the vertical pixel adjustment to align characters.
+    - variant_baseline: stored offset from manual calibration (if any)
+    - descenders: move DOWN (positive Y)
+    """
     if variant_baseline != 0:
         return variant_baseline
     if char in DESCENDERS:
-        return -int(char_height * 0.25)
+        # Move down by ~22% of height to place the descender below the baseline
+        return int(char_height * 0.22)
     return 0
 
 
@@ -355,9 +350,9 @@ def write_text_to_screen(
     speed: str = "normal",
     font_size_scale: float = 1.0,
     size_variation: float = 0.05,
-    rotation_variation: float = 2.0,
-    vertical_jitter: float = 1.0,
-    point_delay_s: float = 0.001,
+    rotation_variation: float = 1.5,
+    vertical_jitter: float = 0.8,
+    point_delay_s: float = 0.002,
     pressure: float = 0.7,
 ):
     if not HAS_NATIVE_EVENTS:
@@ -373,26 +368,25 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
-        # Better line recognition logic
-        # line_height_px should be the distance between two lines.
-        # we can use calibration.line_top_offset and calibration.line_bottom_offset if they exist.
+        # Alignment logic
         line_top = getattr(calibration, "line_top_offset", 0)
-
         start_x = 0
         start_y = line_top
         area_w = calibration.write_area_width
 
-        # Scaling: Use more direct scale since we have pen injection speed
-        effective_font_scale = (font_size_scale * 0.3) / max(0.1, calibration.zoom_level)
-
+        # Scaling adjustment
+        effective_font_scale = (font_size_scale * 0.32) / max(0.1, calibration.zoom_level)
         line_h = int(calibration.line_height_px * font_size_scale)
-        char_spacing = int(profile.char_spacing * calibration.zoom_level)
+
+        # Kerning / Spacing
+        min_letter_spacing = 3
+        char_spacing_base = int(profile.char_spacing * calibration.zoom_level)
         word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
         cursor_y = start_y
         job.current_line = 0
-        job.message = f"Engine V4.0 (Turbo) - {'Pen' if input_mgr.use_pen_injection else 'Mouse'}"
+        job.message = "Engine V4.1 (Fluid) - Handwriting..."
 
         if not prepare_onenote():
             job.status = "error"
@@ -411,9 +405,9 @@ def write_text_to_screen(
                 variants = profile.characters.get(char, [])
                 if variants:
                     v = random.choice(variants)
-                    ww += v.width * effective_font_scale + char_spacing
+                    ww += v.width * effective_font_scale + char_spacing_base + min_letter_spacing
                 else:
-                    ww += profile.avg_char_width * effective_font_scale + char_spacing
+                    ww += profile.avg_char_width * effective_font_scale + char_spacing_base + min_letter_spacing
 
             if cursor_x > start_x and cursor_x + ww > start_x + area_w:
                 cursor_x = start_x
@@ -425,7 +419,7 @@ def write_text_to_screen(
                 if job.cancelled: break
 
                 if char == " ":
-                    cursor_x += int(profile.avg_char_width * effective_font_scale * 0.5)
+                    cursor_x += int(profile.avg_char_width * effective_font_scale * 0.6)
                     job.chars_done += 1
                     continue
 
@@ -447,13 +441,14 @@ def write_text_to_screen(
 
                 char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
-                # Use pre-computed strokes for maximum speed
+                # Use pre-computed strokes
                 if hasattr(variant, 'strokes') and variant.strokes:
                     sw, sh = variant.width, variant.height
                     strokes = [[(int(x / sw * cw), int(y / sh * ch)) for x, y in s] for s in variant.strokes]
                 else:
                     strokes = extract_stroke_paths(variant.image_path, cw, ch)
 
+                # FORCED PEN-UP between characters
                 _draw_strokes(
                     job=job,
                     strokes=strokes,
@@ -462,17 +457,18 @@ def write_text_to_screen(
                     origin_x=cursor_x,
                     origin_y=y_pos + char_v_jitter,
                     point_delay_s=point_delay_s,
-                    pressure=int(pressure * 1024),
+                    pressure_base=int(pressure * 1024),
                 )
 
-                cursor_x += cw + char_spacing
+                # Spacing / Kerning
+                cursor_x += cw + char_spacing_base + min_letter_spacing + int(random.uniform(0, 2))
                 job.chars_done += 1
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Turbo-Finish!"
+        job.message = "Fertig!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Turbo-Error: {exc}"
+        job.message = f"Error: {exc}"

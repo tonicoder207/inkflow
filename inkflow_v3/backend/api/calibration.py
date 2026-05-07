@@ -79,6 +79,11 @@ async def compute_from_points(cal_id: str):
 
         cal.write_area_x = int(min(tl.x, tr.x, br.x, bl.x))
         cal.write_area_y = int(min(tl.y, tr.y, br.y, bl.y))
+
+        # Add a small buffer for OneNote rule lines if not set
+        if cal.line_top_offset == 0:
+            cal.line_top_offset = 2
+
         cal.write_area_width = width
         cal.write_area_height = height
         cal.transform_matrix = matrix.tolist()
