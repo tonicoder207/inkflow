@@ -158,10 +158,19 @@ def prepare_onenote() -> bool:
         win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
         win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
         win32gui.SetForegroundWindow(target_hwnd)
-        time.sleep(0.3)
+        time.sleep(0.2)
     except Exception:
         return False
     return True
+
+
+def scroll_onenote(amount: int):
+    """Scroll OneNote down using the mouse wheel."""
+    if not HAS_NATIVE_EVENTS: return
+    # MOUSEEVENTF_WHEEL takes dwData as the amount to scroll.
+    # A positive value scrolls away from the user (up), negative scrolls towards (down).
+    # OneNote typically needs -120 per notch.
+    win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
 
 
 def _screen_metrics():
@@ -270,8 +279,8 @@ def _draw_strokes(
 ):
     if not strokes: return
 
-    # Boosted speed multipliers
-    speed_mul = {"slow": 1.2, "normal": 0.6, "fast": 0.2}.get(speed, 1.0)
+    # Ultra-Turbo speed multipliers: almost no delay
+    speed_mul = {"slow": 0.5, "normal": 0.1, "fast": 0.001}.get(speed, 1.0)
     base_delay = point_delay_s * speed_mul
     vx, vy, vw, vh = _screen_metrics()
 
@@ -285,44 +294,32 @@ def _draw_strokes(
         if job.cancelled: break
         if not stroke: continue
 
-        # Human-like smoothing and interpolation
+        # Human-like smoothing but with minimal points for speed
         if len(stroke) >= 4:
-            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=4)
+            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3)
         else:
-            smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=3)
+            smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=2)
 
-        # Pen down with micro-delay for contact
+        # Pen down
         fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
-        # Start light (human pressure dynamics)
-        p_val = int(pressure_base * 0.7)
-        input_mgr.down(fx, fy, pressure=p_val)
-        time.sleep(max(0.001, base_delay))
+        input_mgr.down(fx, fy, pressure=int(pressure_base * 0.7))
+        if base_delay > 0.001: time.sleep(base_delay)
 
         for i in range(1, len(smoothed)):
             if job.cancelled: break
             ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
 
-            # Dynamic pressure and velocity
-            # Velocity: slow down on curves
-            # Simple heuristic: change in angle
-            p1 = smoothed[i-1]
-            p2 = smoothed[i]
-            dist = math.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2)
-
-            # Pressure variation (sinusoidal)
-            t_prog = i / len(smoothed)
-            curr_p = int(pressure_base * (0.8 + 0.4 * math.sin(t_prog * math.pi)))
-
+            # Simple pressure variation without expensive math
+            curr_p = pressure_base if i % 2 == 0 else int(pressure_base * 1.1)
             input_mgr.move_to(ax, ay, pressure=curr_p)
 
-            # Micro-delay based on distance and curve
-            move_delay = (base_delay / 2.0) * (dist / 2.0)
-            if move_delay > 0: time.sleep(min(0.005, move_delay))
+            # Ultra-low delay
+            if base_delay > 0.0001: time.sleep(base_delay / 4.0)
 
         # Pen up
         lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        time.sleep(max(0.002, base_delay * 1.5))
+        if base_delay > 0.001: time.sleep(base_delay)
 
 
 # Characters that extend BELOW the baseline
@@ -350,9 +347,9 @@ def write_text_to_screen(
     speed: str = "normal",
     font_size_scale: float = 1.0,
     size_variation: float = 0.05,
-    rotation_variation: float = 1.5,
-    vertical_jitter: float = 0.8,
-    point_delay_s: float = 0.002,
+    rotation_variation: float = 1.0,
+    vertical_jitter: float = 0.5,
+    point_delay_s: float = 0.001,
     pressure: float = 0.7,
 ):
     if not HAS_NATIVE_EVENTS:
@@ -373,31 +370,46 @@ def write_text_to_screen(
         start_x = 0
         start_y = line_top
         area_w = calibration.write_area_width
+        area_h = calibration.write_area_height
 
         # Scaling adjustment
         effective_font_scale = (font_size_scale * 0.32) / max(0.1, calibration.zoom_level)
         line_h = int(calibration.line_height_px * font_size_scale)
 
-        # Kerning / Spacing
-        min_letter_spacing = 3
+        # Spacing
         char_spacing_base = int(profile.char_spacing * calibration.zoom_level)
         word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
         cursor_y = start_y
         job.current_line = 0
-        job.message = "Engine V4.1 (Fluid) - Handwriting..."
+        job.message = "Engine V4.2 (Turbo-Fluid) - Writing..."
 
         if not prepare_onenote():
             job.status = "error"
             job.message = "OneNote window not found!"
             return
         
-        time.sleep(0.2)
+        time.sleep(0.1)
+
+        # Scroll threshold: vorvorletzte Zeile (e.g., around 75-80% of area height)
+        scroll_threshold_y = area_h * 0.75
+
+        last_focus_check = time.time()
 
         for word in words:
             job.wait_if_paused()
             if job.cancelled: break
+
+            # Slipping Prevention: Periodic Focus Check
+            if time.time() - last_focus_check > 2.0:
+                curr_hwnd = win32gui.GetForegroundWindow()
+                title = win32gui.GetWindowText(curr_hwnd).lower()
+                if "onenote" not in title:
+                    job.message = "Focus lost! Pausing..."
+                    job.pause()
+                    # User will need to resume after focusing OneNote
+                last_focus_check = time.time()
 
             # Word width estimate
             ww = 0
@@ -405,14 +417,24 @@ def write_text_to_screen(
                 variants = profile.characters.get(char, [])
                 if variants:
                     v = random.choice(variants)
-                    ww += v.width * effective_font_scale + char_spacing_base + min_letter_spacing
+                    ww += v.width * effective_font_scale + char_spacing_base
                 else:
-                    ww += profile.avg_char_width * effective_font_scale + char_spacing_base + min_letter_spacing
+                    ww += profile.avg_char_width * effective_font_scale + char_spacing_base
 
             if cursor_x > start_x and cursor_x + ww > start_x + area_w:
                 cursor_x = start_x
                 cursor_y += line_h
                 job.current_line += 1
+
+                # Check for auto-scroll
+                if cursor_y > scroll_threshold_y:
+                    job.message = "Auto-Scrolling..."
+                    # Scroll down by roughly one line height in pixels (negative value)
+                    scroll_onenote(-120)
+                    time.sleep(0.2)
+                    # Adjust cursor_y back up to stay on the same "relative" line on screen
+                    cursor_y -= line_h
+                    job.message = "Engine V4.2 (Turbo-Fluid) - Writing..."
 
             for char in word:
                 job.wait_if_paused()
@@ -448,7 +470,6 @@ def write_text_to_screen(
                 else:
                     strokes = extract_stroke_paths(variant.image_path, cw, ch)
 
-                # FORCED PEN-UP between characters
                 _draw_strokes(
                     job=job,
                     strokes=strokes,
@@ -460,15 +481,14 @@ def write_text_to_screen(
                     pressure_base=int(pressure * 1024),
                 )
 
-                # Spacing / Kerning
-                cursor_x += cw + char_spacing_base + min_letter_spacing + int(random.uniform(0, 2))
+                cursor_x += cw + char_spacing_base + int(random.uniform(0, 1))
                 job.chars_done += 1
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Fertig!"
+        job.message = "Turbo-Finish!"
     except Exception as exc:
         job.status = "error"
         job.message = f"Error: {exc}"
