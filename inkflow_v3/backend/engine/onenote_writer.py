@@ -129,7 +129,7 @@ def _ensure_failsafe_listener():
 
 
 def prepare_onenote() -> bool:
-    """Bring OneNote to foreground, maximize and apply known zoom sequence."""
+    """Bring OneNote to foreground, maximize."""
     if not HAS_NATIVE_EVENTS or win32gui is None:
         return False
 
@@ -149,26 +149,10 @@ def prepare_onenote() -> bool:
         win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
         win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
         win32gui.SetForegroundWindow(target_hwnd)
-        time.sleep(0.25)
+        time.sleep(0.3)
 
-        # OneNote Zoom/Reset Sequence
-        _send_hotkey([win32con.VK_MENU], ord("F"))
-        time.sleep(0.06)
-        _send_key(ord("1"))
-        time.sleep(0.06)
-        _send_key(ord("O"))
-        time.sleep(0.06)
-        _type_text("100")
-        time.sleep(0.04)
-        _send_key(win32con.VK_RETURN)
-        time.sleep(0.35)
-
-        _send_hotkey([win32con.VK_MENU], ord("H"))
-        time.sleep(0.06)
-        _send_key(ord("F"))
-        time.sleep(0.06)
-        _send_key(ord("1"))
-        time.sleep(0.2)
+        # User requested to remove the automated zoom typing as it interferes with textboxes.
+        # We only keep the window activation.
     except Exception:
         return False
     return True
@@ -203,25 +187,36 @@ def _screen_metrics():
     return vx, vy, max(1, vw), max(1, vh)
 
 
-def extract_stroke_path(image_path: str, target_w: int, target_h: int) -> list[tuple[int, int]]:
+def extract_stroke_paths(image_path: str, target_w: int, target_h: int) -> list[list[tuple[int, int]]]:
+    """
+    Extracts multiple strokes from a character image.
+    Splits the path into separate strokes when a large gap is detected.
+    """
     try:
         img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if img is None:
-            return _fallback_path(target_w, target_h)
+            return [_fallback_path(target_w, target_h)]
+
         if len(img.shape) == 3 and img.shape[2] == 4:
             mask = img[:, :, 3]
         else:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             _, mask = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
 
-        points = _skeleton_to_path(_skeletonize((mask > 127).astype(np.uint8)))
-        if len(points) < 2:
-            return _fallback_path(target_w, target_h)
-
         h, w = mask.shape
-        return [(int(x / w * target_w), int(y / h * target_h)) for x, y in points]
+        raw_strokes = _skeleton_to_multi_strokes(_skeletonize((mask > 127).astype(np.uint8)))
+
+        if not raw_strokes:
+            return [_fallback_path(target_w, target_h)]
+
+        # Map to target size
+        final_strokes = []
+        for stroke in raw_strokes:
+            final_strokes.append([(int(x / w * target_w), int(y / h * target_h)) for x, y in stroke])
+
+        return final_strokes
     except Exception:
-        return _fallback_path(target_w, target_h)
+        return [_fallback_path(target_w, target_h)]
 
 
 def _skeletonize(binary_img):
@@ -238,92 +233,97 @@ def _skeletonize(binary_img):
     return skeleton
 
 
-def _skeleton_to_path(skeleton):
+def _skeleton_to_multi_strokes(skeleton):
     """
-    Extracts a smooth path from a skeleton using a greedy nearest-neighbor approach.
-    This prevents the 'up and down' jitter caused by simple sorting.
+    Splits the skeleton into multiple strokes using a nearest-neighbor approach
+    with a distance threshold.
     """
     pts = list(zip(*np.where(skeleton > 0)))
-    if not pts:
-        return []
-
-    # Convert to list of [x, y] for easier handling (OpenCV uses [y, x] in where)
+    if not pts: return []
     pts = [[c, r] for r, c in pts]
 
-    path = []
-    # Start at the leftmost point
-    pts.sort(key=lambda p: p[0])
-    current = pts.pop(0)
-    path.append(tuple(current))
+    strokes = []
+    MAX_GAP = 12.0  # Pixels. If next point is further than this, start new stroke.
 
     while pts:
-        # Find nearest neighbor
-        distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
-        idx = np.argmin(distances)
+        # Start new stroke
+        pts.sort(key=lambda p: (p[0], p[1]))
+        current = pts.pop(0)
+        current_stroke = [tuple(current)]
 
-        # If the jump is too far, it's likely a different stroke (not handled here yet)
-        # but for single chars, it's usually fine.
-        current = pts.pop(idx)
-        path.append(tuple(current))
+        while True:
+            if not pts: break
 
-    # Downsample
-    if len(path) > 150:
-        step = max(1, len(path) // 150)
-        path = path[::step]
+            # Find nearest neighbor
+            distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
+            idx = np.argmin(distances)
+            dist = math.sqrt(distances[idx])
 
-    return path
+            if dist > MAX_GAP:
+                # End of this stroke
+                break
+
+            current = pts.pop(idx)
+            current_stroke.append(tuple(current))
+
+        if len(current_stroke) > 1:
+            # Downsample
+            if len(current_stroke) > 100:
+                step = len(current_stroke) // 100
+                current_stroke = current_stroke[::step]
+            strokes.append(current_stroke)
+
+    return strokes
 
 
 def _fallback_path(w, h):
     return [(w // 2, int(h * t)) for t in [i / 10 for i in range(11)]]
 
 
-def _draw_stroke(
+def _draw_strokes(
     job: WriteJob,
-    points: list[tuple[int, int]],
+    strokes: list[list[tuple[int, int]]],
     speed: str,
     translator: CoordinateTranslator,
     origin_x: int,
     origin_y: int,
     point_delay_s: float,
 ):
-    if not points:
-        return
+    if not strokes: return
 
     speed_mul = {"slow": 1.7, "normal": 1.0, "fast": 0.65}.get(speed, 1.0)
     base_delay = max(0.0005, point_delay_s * speed_mul)
-
     vx, vy, vw, vh = _screen_metrics()
-
-    # Apply smoothing
-    if len(points) >= 4:
-        # Use Catmull-Rom for natural curvature
-        smoothed_points = stroke_proc.get_catmull_rom_spline(points, num_points=5)
-    else:
-        # Simple subdivision for short strokes
-        smoothed_points = stroke_proc.smooth_bezier(points, steps_per_segment=3)
 
     def to_win(px, py):
         tx, ty = translator.to_windows_coordinates(px, py)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
-    # First point
-    fx, fy = to_win(origin_x + smoothed_points[0][0], origin_y + smoothed_points[0][1])
-    input_mgr.down(fx, fy)
-    time.sleep(base_delay)
+    for stroke in strokes:
+        if job.cancelled: break
+        if not stroke: continue
 
-    for i in range(1, len(smoothed_points)):
-        if job.cancelled:
-            break
-        px, py = smoothed_points[i]
-        ax, ay = to_win(origin_x + px, origin_y + py)
-        input_mgr.move_to(ax, ay)
-        time.sleep(base_delay / 2.0)
+        # Smoothing
+        if len(stroke) >= 4:
+            smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=4)
+        else:
+            smoothed = stroke_proc.smooth_bezier(stroke, steps_per_segment=2)
 
-    # Last point
-    lx, ly = to_win(origin_x + smoothed_points[-1][0], origin_y + smoothed_points[-1][1])
-    input_mgr.up(lx, ly)
-    time.sleep(base_delay)
+        # Pen down
+        fx, fy = to_win(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
+        input_mgr.down(fx, fy)
+        time.sleep(base_delay)
+
+        for i in range(1, len(smoothed)):
+            if job.cancelled: break
+            ax, ay = to_win(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
+            input_mgr.move_to(ax, ay)
+            time.sleep(base_delay / 2.0)
+
+        # Pen up
+        lx, ly = to_win(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
+        input_mgr.up(lx, ly)
+        time.sleep(base_delay * 1.5) # Small pause between strokes
 
 
 DESCENDERS = set("gjpqyÖÄÜöäüß")
@@ -362,42 +362,47 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
+        # Baseline and scaling fixes
+        # Use calibration values to set the actual start position
         start_x = 0
+        # Start at 0 relative to write_area_y (CoordinateTranslator handles write_area_y offset)
         start_y = 0
         area_w = calibration.write_area_width
+
+        # Adjust scaling: The user reports it's 3x too large.
+        # We also need to consider zoom_level.
+        # Let's try a more conservative base scale and respect calibration.zoom_level
+        effective_font_scale = (font_size_scale * 0.35) / max(0.1, calibration.zoom_level)
+
         line_h = int(calibration.line_height_px * font_size_scale)
-        char_w = int(profile.avg_char_width * font_size_scale * calibration.zoom_level)
-        space_w = int(char_w * 0.55)
-        word_sp = int(profile.word_spacing * font_size_scale)
+        char_spacing = int(profile.char_spacing * calibration.zoom_level)
+        word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
         cursor_y = start_y
         job.current_line = 0
-        job.message = "OneNote wird vorbereitet..."
+        job.message = "V3.2 Engine Ready. Writing..."
 
         if not prepare_onenote():
             job.status = "error"
-            job.message = "Fehler: OneNote-Fenster wurde nicht gefunden. Bitte OneNote öffnen!"
+            job.message = "OneNote window not found!"
             return
         
-        job.message = "Engine V3.1 Active. Schreibe..."
         time.sleep(0.3)
 
         for word in words:
             job.wait_if_paused()
-            if job.cancelled:
-                break
+            if job.cancelled: break
 
-            # Word width estimation
-            ww = sum(
-                (
-                    (sum(v.width for v in profile.characters.get(c, [])) / max(len(profile.characters.get(c, [])), 1))
-                    if profile.characters.get(c)
-                    else profile.avg_char_width
-                )
-                * font_size_scale
-                for c in word
-            )
+            # Word width estimate
+            ww = 0
+            for char in word:
+                variants = profile.characters.get(char, [])
+                if variants:
+                    v = random.choice(variants)
+                    ww += v.width * effective_font_scale + char_spacing
+                else:
+                    ww += profile.avg_char_width * effective_font_scale + char_spacing
 
             if cursor_x > start_x and cursor_x + ww > start_x + area_w:
                 cursor_x = start_x
@@ -406,50 +411,61 @@ def write_text_to_screen(
 
             for char in word:
                 job.wait_if_paused()
-                if job.cancelled:
-                    break
+                if job.cancelled: break
+
                 if char == " ":
-                    cursor_x += space_w
+                    cursor_x += int(profile.avg_char_width * effective_font_scale * 0.5)
                     job.chars_done += 1
                     continue
 
                 variants = profile.characters.get(char, [])
                 if not variants:
-                    cursor_x += char_w
+                    cursor_x += int(profile.avg_char_width * effective_font_scale)
                     job.chars_done += 1
                     continue
 
                 variant = random.choice(variants)
-                scale = font_size_scale * random.uniform(1 - size_variation, 1 + size_variation)
-                cw = int(variant.width * scale * calibration.zoom_level)
-                ch = int(variant.height * scale * calibration.zoom_level)
+                scale = effective_font_scale * random.uniform(1 - size_variation, 1 + size_variation)
+                cw = int(variant.width * scale)
+                ch = int(variant.height * scale)
 
-                # Baseline correction
+                # Baseline logic
                 baseline_y = cursor_y + line_h
                 baseline_offset = _compute_baseline_offset(char, ch, variant.baseline_offset)
                 y_pos = baseline_y - ch + baseline_offset
 
                 char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
-                points = extract_stroke_path(variant.image_path, cw, ch)
-                _draw_stroke(
+                # Use pre-computed strokes if available for better movement reproduction
+                if hasattr(variant, 'strokes') and variant.strokes:
+                    # Scale strokes to target size
+                    # variant.strokes are in pixels relative to the original variant image
+                    sw, sh = variant.width, variant.height
+                    strokes = []
+                    for s in variant.strokes:
+                        strokes.append([(int(x / sw * cw), int(y / sh * ch)) for x, y in s])
+                else:
+                    strokes = extract_stroke_paths(variant.image_path, cw, ch)
+
+                _draw_strokes(
                     job=job,
-                    points=points,
+                    strokes=strokes,
                     speed=speed,
                     translator=translator,
                     origin_x=cursor_x,
                     origin_y=y_pos + char_v_jitter,
                     point_delay_s=point_delay_s,
                 )
-                cursor_x += cw + int(profile.char_spacing * calibration.zoom_level)
+
+                cursor_x += cw + char_spacing
                 job.chars_done += 1
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
             cursor_x += word_sp
-            time.sleep(max(0.001, point_delay_s * 2))
+            time.sleep(max(0.001, point_delay_s))
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Fertig!" if not job.cancelled else "Abgebrochen"
+        job.message = "Fertig!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Fehler: {exc}"
+        job.message = f"Error: {exc}"

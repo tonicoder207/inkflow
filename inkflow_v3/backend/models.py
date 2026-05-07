@@ -12,6 +12,7 @@ class CharacterVariant(BaseModel):
     width: int
     height: int
     baseline_offset: int = 0
+    strokes: Optional[list[list[tuple[int, int]]]] = None
 
 class HandwritingProfile(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
