@@ -56,7 +56,7 @@ def delete_profile(pid):
     pd = _profile_dir(pid)
     if pd.exists(): shutil.rmtree(pd)
 
-def save_character_variant(pid, char, image_bytes, width, height, baseline_offset=0):
+def save_character_variant(pid, char, image_bytes, width, height, baseline_offset=0, strokes=None):
     from models import CharacterVariant
     p = load_profile(pid)
     cd = _chars_dir(pid, char)
@@ -67,7 +67,7 @@ def save_character_variant(pid, char, image_bytes, width, height, baseline_offse
     with open(img_path, "wb") as f: f.write(image_bytes)
     v = CharacterVariant(character=char, variant_index=idx,
         image_path=img_path, width=width, height=height,
-        baseline_offset=baseline_offset)
+        baseline_offset=baseline_offset, strokes=strokes)
     existing.append(v)
     p.characters[char] = existing
     save_profile(p)

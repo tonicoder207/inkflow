@@ -51,7 +51,14 @@ async def upload_char(pid: str, character: str = Form(...), file: UploadFile = F
     if cleaned is None: raise HTTPException(400, "No stroke detected")
     pil = Image.fromarray(cv2.cvtColor(cleaned, cv2.COLOR_BGRA2RGBA))
     buf = io.BytesIO(); pil.save(buf, "PNG")
-    v = save_character_variant(pid, character, buf.getvalue(), pil.width, pil.height)
+
+    # Generate strokes once during upload to ensure movement is preserved
+    from engine.onenote_writer import _skeletonize, _skeleton_to_multi_strokes
+    # Use the cleaned BGRA image (Alpha channel contains the stroke)
+    mask = cleaned[:, :, 3]
+    strokes = _skeleton_to_multi_strokes(_skeletonize((mask > 127).astype(np.uint8)))
+
+    v = save_character_variant(pid, character, buf.getvalue(), pil.width, pil.height, strokes=strokes)
     return {"character": character, "variant": v}
 
 @router.get("/{pid}/char-preview/{char_hex}")
