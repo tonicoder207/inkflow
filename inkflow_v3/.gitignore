@@ -1,0 +1,29 @@
+# Node dependencies
+node_modules/
+dist/
+build/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDEs and OS files
+.vscode/
+.cursor/
+.DS_Store
+Thumbs.db
+
+# Project specific
+inkflow_v3/python_embedded/
+inkflow_v3/dist_electron/
+inkflow_v3/data/
+installer/dist/
+*.exe
+*.zip
+*.msi
+inkflow_v3/dist_electron/

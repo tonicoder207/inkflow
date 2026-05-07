@@ -1,0 +1,58 @@
+{
+  "name": "inkflow",
+  "version": "3.0.0",
+  "description": "InkFlow — Handschrift in OneNote",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist":  "electron-builder --win --x64 --publish never"
+  },
+  "build": {
+    "appId":       "com.inkflow.app",
+    "productName": "InkFlow",
+    "directories": {
+      "output":         "dist_electron",
+      "buildResources": "assets"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from":   "backend",
+        "to":     "backend",
+        "filter": ["**/*.py", "requirements.txt"]
+      },
+      {
+        "from":   "python_embedded",
+        "to":     "python",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "dir", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut":   true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "InkFlow",
+      "include": "installer/install_deps.nsh"
+    },
+    "portable": {
+      "artifactName": "InkFlow-Portable-${version}.exe"
+    }
+  },
+  "devDependencies": {
+    "electron":         "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}

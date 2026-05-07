@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>InkFlow Kalibrierung</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: rgba(0, 0, 0, 0.005); /* Nearly transparent but captures clicks */
+      cursor: crosshair;
+      user-select: none;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    /* Semi-transparent border frame to show the overlay is active */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      border: 3px solid rgba(201, 168, 76, 0.6);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Instruction banner at top */
+    #banner {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(12, 12, 26, 0.92);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(201, 168, 76, 0.4);
+      border-radius: 16px;
+      padding: 16px 32px;
+      z-index: 100;
+      text-align: center;
+      color: #e8e4d9;
+      pointer-events: none; /* Let clicks pass to the document */
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    #banner h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #c9a84c;
+      margin-bottom: 6px;
+      letter-spacing: 0.5px;
+    }
+
+    #banner p {
+      font-size: 13px;
+      color: #a8a090;
+      line-height: 1.5;
+    }
+
+    #banner .step-num {
+      display: inline-block;
+      background: rgba(201, 168, 76, 0.2);
+      border: 1px solid rgba(201, 168, 76, 0.4);
+      border-radius: 8px;
+      padding: 2px 10px;
+      font-size: 12px;
+      color: #c9a84c;
+      margin-bottom: 8px;
+    }
+
+    #banner .instruction {
+      font-size: 15px;
+      color: #fff;
+      font-weight: 500;
+      margin: 8px 0;
+    }
+
+    /* Buttons inside the banner for confirmation */
+    .btn-container {
+      margin-top: 15px;
+      display: flex;
+      gap: 10px;
+      justify-content: center;
+      pointer-events: auto; /* Enable clicks on buttons */
+      display: none; /* Hidden initially */
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+
+    .btn-success {
+      background: rgba(52, 211, 153, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(52, 211, 153, 0.4);
+    }
+    .btn-success:hover { background: rgba(52, 211, 153, 0.3); }
+
+    .btn-warning {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .btn-warning:hover { background: rgba(245, 158, 11, 0.25); }
+
+
+    /* Click marker */
+    .marker {
+      position: fixed;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: rgba(52, 211, 153, 0.3);
+      border: 2px solid rgba(52, 211, 153, 0.8);
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 50;
+      animation: markerPop 0.3s ease-out;
+    }
+
+    .marker::after {
+      content: '';
+      position: absolute;
+      inset: -6px;
+      border-radius: 50%;
+      border: 1px solid rgba(52, 211, 153, 0.4);
+      animation: markerRing 0.6s ease-out;
+    }
+
+    /* Crosshair at cursor position */
+    #crosshair-h, #crosshair-v {
+      position: fixed;
+      background: rgba(201, 168, 76, 0.3);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    #crosshair-h {
+      left: 0;
+      right: 0;
+      height: 1px;
+    }
+
+    #crosshair-v {
+      top: 0;
+      bottom: 0;
+      width: 1px;
+    }
+
+    /* Coordinate display near cursor */
+    #coords {
+      position: fixed;
+      background: rgba(12, 12, 26, 0.85);
+      color: #c9a84c;
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(201, 168, 76, 0.3);
+      pointer-events: none;
+      z-index: 60;
+      white-space: nowrap;
+    }
+
+    /* Cancel hint at bottom */
+    #cancel-hint {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(12, 12, 26, 0.85);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      padding: 8px 20px;
+      color: #666;
+      font-size: 11px;
+      pointer-events: none;
+      z-index: 100;
+    }
+
+    #cancel-hint kbd {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: 'Consolas', monospace;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <div id="overlay"></div>
+
+  <div id="banner">
+    <span class="step-num" id="step-label">Schritt 1 / 4</span>
+    <p class="instruction" id="instruction">Klicke OBEN LINKS auf die OneNote-Schreibfläche</p>
+    <p id="sub-instruction">Klicke direkt auf die Stelle wo der Text beginnen soll</p>
+    
+    <div class="btn-container" id="btn-container">
+      <button class="btn btn-success" id="btn-confirm">✓ Passt!</button>
+      <button class="btn btn-warning" id="btn-retry">⟲ Nochmal</button>
+    </div>
+  </div>
+
+  <div id="crosshair-h"></div>
+  <div id="crosshair-v"></div>
+  <div id="coords">0, 0</div>
+
+  <div id="cancel-hint"><kbd>Esc</kbd> zum Abbrechen</div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const steps = [
+      { label: "top_left",     instruction: "Klicke OBEN LINKS auf die OneNote-Schreibfläche" },
+      { label: "top_right",    instruction: "Klicke OBEN RECHTS auf die OneNote-Schreibfläche" },
+      { label: "bottom_right", instruction: "Klicke UNTEN RECHTS auf die OneNote-Schreibfläche" },
+      { label: "bottom_left",  instruction: "Klicke UNTEN LINKS auf die OneNote-Schreibfläche" },
+    ];
+
+    let currentStep = 0;
+    let points = [];
+    let isTesting = false;
+
+    const banner      = document.getElementById('banner');
+    const stepLabel   = document.getElementById('step-label');
+    const instruction = document.getElementById('instruction');
+    const subInstruction = document.getElementById('sub-instruction');
+    const crosshairH  = document.getElementById('crosshair-h');
+    const crosshairV  = document.getElementById('crosshair-v');
+    const coordsEl    = document.getElementById('coords');
+    const btnContainer= document.getElementById('btn-container');
+    const btnConfirm  = document.getElementById('btn-confirm');
+    const btnRetry    = document.getElementById('btn-retry');
+
+    // Track mouse for crosshair
+    document.addEventListener('mousemove', (e) => {
+      if (isTesting) return;
+      crosshairH.style.top  = e.clientY + 'px';
+      crosshairV.style.left = e.clientX + 'px';
+      coordsEl.style.left   = (e.clientX + 15) + 'px';
+      coordsEl.style.top    = (e.clientY + 15) + 'px';
+      coordsEl.textContent  = `${e.screenX}, ${e.screenY}`;
+    });
+
+    function resetCalibration() {
+      currentStep = 0;
+      points = [];
+      isTesting = false;
+      stepLabel.textContent = `Schritt 1 / ${steps.length}`;
+      instruction.textContent = steps[0].instruction;
+      subInstruction.textContent = 'Markiere den vollständigen Schreibbereich Ecke für Ecke';
+      subInstruction.style.display = 'block';
+      btnContainer.style.display = 'none';
+      crosshairH.style.display = 'block';
+      crosshairV.style.display = 'block';
+      coordsEl.style.display = 'block';
+      
+      // Remove all markers
+      document.querySelectorAll('.marker').forEach(m => m.remove());
+    }
+
+    // Capture clicks
+    document.addEventListener('mousedown', async (e) => {
+      // Ignore clicks on the banner or during testing
+      if (e.target.closest('#banner') || isTesting || currentStep >= steps.length) return;
+
+      let sx = Math.round(e.screenX);
+      let sy = Math.round(e.screenY);
+      try {
+        // Prefer OS cursor coordinates from Electron main process.
+        const osPos = await ipcRenderer.invoke('get-cursor-screen-point');
+        if (osPos && Number.isFinite(osPos.x) && Number.isFinite(osPos.y)) {
+          sx = Math.round(osPos.x);
+          sy = Math.round(osPos.y);
+        }
+      } catch {}
+
+      const point = {
+        label: steps[currentStep].label,
+        x: sx,
+        y: sy,
+      };
+
+      points.push(point);
+
+      // Visual marker
+      const marker = document.createElement('div');
+      marker.className = 'marker';
+      marker.style.left = e.clientX + 'px';
+      marker.style.top  = e.clientY + 'px';
+      document.body.appendChild(marker);
+
+      currentStep++;
+
+      if (currentStep >= steps.length) {
+        // All points captured — run test square
+        isTesting = true;
+        stepLabel.textContent = 'Test-Lauf';
+        instruction.textContent = 'Test-Quadrat wird gezeichnet...';
+        subInstruction.textContent = 'Bitte warten';
+        
+        // Hide crosshairs
+        crosshairH.style.display = 'none';
+        crosshairV.style.display = 'none';
+        coordsEl.style.display = 'none';
+
+        const topLeft = points.find(p => p.label === 'top_left');
+        
+        // Ask main process to temporarily let clicks through to OneNote
+        ipcRenderer.send('calibration-testing-start');
+
+        try {
+          const res = await fetch(`http://127.0.0.1:8000/api/onenote/test-square`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ x: topLeft.x, y: topLeft.y, size: 50 }),
+          });
+          if (!res.ok) {
+            const payload = await res.json().catch(() => null);
+            const detail = payload?.detail || `HTTP ${res.status}`;
+            throw new Error(detail);
+          }
+          
+          instruction.textContent = 'Test-Quadrat gezeichnet!';
+          subInstruction.textContent = 'Stimmt die Position? Das Quadrat sollte oben links sein.';
+          btnContainer.style.display = 'flex';
+          
+        } catch (err) {
+          instruction.textContent = 'Fehler beim Test-Lauf';
+          subInstruction.textContent = String(err?.message || err || 'Unbekannter Fehler');
+          btnContainer.style.display = 'flex';
+        }
+
+        // Restore overlay to catch clicks again
+        ipcRenderer.send('calibration-testing-end');
+
+      } else {
+        // Next step
+        stepLabel.textContent = `Schritt ${currentStep + 1} / ${steps.length}`;
+        instruction.textContent = steps[currentStep].instruction;
+        subInstruction.textContent = '';
+      }
+    });
+
+    btnConfirm.addEventListener('click', () => {
+      stepLabel.textContent = 'Fertig!';
+      instruction.textContent = 'Kalibrierung gespeichert.';
+      subInstruction.style.display = 'none';
+      btnContainer.style.display = 'none';
+      setTimeout(() => {
+        ipcRenderer.send('calibration-done', points);
+      }, 400);
+    });
+
+    btnRetry.addEventListener('click', () => {
+      resetCalibration();
+    });
+
+    // Escape to cancel
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        ipcRenderer.send('calibration-cancel');
+      }
+    });
+  </script>
+</body>
+</html>
