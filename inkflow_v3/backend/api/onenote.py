@@ -36,6 +36,7 @@ async def start_write(req: WriteRequest):
         write_text_to_screen(
             job=job, profile=profile, calibration=calibration,
             text=req.text, speed=req.speed,
+            words_per_second=req.words_per_second,
             font_size_scale=req.font_size_scale,
             size_variation=req.size_variation,
             rotation_variation=req.rotation_variation,
