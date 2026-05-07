@@ -10,127 +10,25 @@ from typing import Optional
 import cv2
 import numpy as np
 
-HAS_PEN_INJECTION = False
+# Import our new modular components
+from .input_manager import InputManager
+from .coordinate_translator import CoordinateTranslator
+from .stroke_processor import StrokeProcessor
+
 HAS_NATIVE_EVENTS = False
 
 try:
     import win32api
     import win32con
     import win32gui
-
     HAS_NATIVE_EVENTS = True
-    HAS_PEN_INJECTION = True
 except Exception:
     win32api = None
     win32con = None
     win32gui = None
-    if platform.system() == "Windows":
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            user32 = ctypes.windll.user32
-
-            class _Win32Con:
-                SW_RESTORE = 9
-                SW_MAXIMIZE = 3
-                VK_MENU = 0x12
-                VK_RETURN = 0x0D
-                KEYEVENTF_KEYUP = 0x0002
-                MOUSEEVENTF_MOVE = 0x0001
-                MOUSEEVENTF_LEFTDOWN = 0x0002
-                MOUSEEVENTF_LEFTUP = 0x0004
-                MOUSEEVENTF_ABSOLUTE = 0x8000
-                MOUSEEVENTF_VIRTUALDESK = 0x4000
-                SM_XVIRTUALSCREEN = 76
-                SM_YVIRTUALSCREEN = 77
-                SM_CXVIRTUALSCREEN = 78
-                SM_CYVIRTUALSCREEN = 79
-
-            class _Point(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-            class _Win32Api:
-                @staticmethod
-                def keybd_event(key, scan, flags, extra):
-                    user32.keybd_event(key, scan, flags, extra)
-
-                @staticmethod
-                def mouse_event(flags, x, y, data, extra):
-                    user32.mouse_event(flags, x, y, data, extra)
-
-                @staticmethod
-                def GetSystemMetrics(index):
-                    return user32.GetSystemMetrics(index)
-
-                @staticmethod
-                def SetCursorPos(pos):
-                    x, y = pos
-                    user32.SetCursorPos(int(x), int(y))
-
-                @staticmethod
-                def GetCursorPos():
-                    pt = _Point()
-                    user32.GetCursorPos(ctypes.byref(pt))
-                    return pt.x, pt.y
-
-            win32api = _Win32Api()
-            win32con = _Win32Con()
-            win32gui = None
-            HAS_NATIVE_EVENTS = True
-            HAS_PEN_INJECTION = True
-            
-            # ── Pen Injection Constants & Structures ───────────────────────────
-            PT_PEN = 3
-            PT_TOUCH = 2
-            POINTER_FLAG_DOWN       = 0x00010000
-            POINTER_FLAG_UPDATE     = 0x00020000
-            POINTER_FLAG_UP         = 0x00040000
-            POINTER_FLAG_INRANGE    = 0x00000002
-            POINTER_FLAG_INCONTACT  = 0x00000004
-            POINTER_FLAG_CONFIDENCE = 0x00000400
-            POINTER_FLAG_PRIMARY    = 0x00002000
-            PEN_FLAG_NONE           = 0x00000000
-            PEN_MASK_PRESSURE       = 0x00000001
-
-            class POINTER_INFO(ctypes.Structure):
-                _fields_ = [
-                    ("pointerType", wintypes.DWORD), ("pointerId", ctypes.c_uint32),
-                    ("frameId", ctypes.c_uint32), ("pointerFlags", wintypes.DWORD),
-                    ("sourceDevice", wintypes.HANDLE), ("hwndTarget", wintypes.HWND),
-                    ("ptPixelLocation", _Point), ("ptHimetricLocation", _Point),
-                    ("ptPixelLocationRaw", _Point), ("ptHimetricLocationRaw", _Point),
-                    ("dwTime", wintypes.DWORD), ("historyCount", ctypes.c_uint32),
-                    ("InputData", ctypes.c_int32), ("dwKeyStates", wintypes.DWORD),
-                    ("PerformanceCount", ctypes.c_uint64), ("ButtonChangeType", ctypes.c_int32),
-                ]
-
-            class POINTER_PEN_INFO(ctypes.Structure):
-                _fields_ = [
-                    ("pointerInfo", POINTER_INFO), ("penFlags", wintypes.DWORD),
-                    ("penMask", wintypes.DWORD), ("pressure", ctypes.c_uint32),
-                    ("rotation", ctypes.c_uint32), ("tiltX", ctypes.c_int32), ("tiltY", ctypes.c_int32),
-                ]
-
-            class POINTER_TYPE_INFO(ctypes.Structure):
-                _fields_ = [("type", wintypes.DWORD), ("penInfo", POINTER_PEN_INFO)]
-
-            _InitializePointerDeviceInjection = user32.InitializePointerDeviceInjection
-            _InitializePointerDeviceInjection.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32]
-            _InitializePointerDeviceInjection.restype = wintypes.BOOL
-
-            _InjectPointerInput = user32.InjectPointerInput
-            _InjectPointerInput.argtypes = [ctypes.c_uint32, ctypes.POINTER(POINTER_TYPE_INFO)]
-            _InjectPointerInput.restype = wintypes.BOOL
-            
-            try: ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except: pass
-        except Exception:
-            pass
 
 try:
     from pynput import keyboard
-
     HAS_KEYBOARD_FAILSAFE = True
 except Exception:
     keyboard = None
@@ -173,6 +71,32 @@ class WriteJob:
 _jobs: dict[str, WriteJob] = {}
 _failsafe_listener = None
 _failsafe_lock = threading.Lock()
+
+# Global instances
+input_mgr = InputManager()
+stroke_proc = StrokeProcessor()
+
+
+# Backward Compatibility Layer for API
+class LegacyPenInjector:
+    def down(self, x: int, y: int, pressure: int = 512):
+        vx, vy, vw, vh = _screen_metrics()
+        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+        input_mgr.down(ax, ay)
+
+    def move(self, x: int, y: int, pressure: int = 512):
+        vx, vy, vw, vh = _screen_metrics()
+        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+        input_mgr.move_to(ax, ay)
+
+    def up(self, x: int, y: int):
+        vx, vy, vw, vh = _screen_metrics()
+        ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
+        input_mgr.up(ax, ay)
+
+
+pen_injector = LegacyPenInjector()
+HAS_PEN_INJECTION = True
 
 
 def get_job(job_id: str) -> Optional[WriteJob]:
@@ -227,8 +151,7 @@ def prepare_onenote() -> bool:
         win32gui.SetForegroundWindow(target_hwnd)
         time.sleep(0.25)
 
-        # User-verified OneNote flow (pen already selected):
-        # 1) Alt+F, 1, O, 100, Enter
+        # OneNote Zoom/Reset Sequence
         _send_hotkey([win32con.VK_MENU], ord("F"))
         time.sleep(0.06)
         _send_key(ord("1"))
@@ -238,10 +161,8 @@ def prepare_onenote() -> bool:
         _type_text("100")
         time.sleep(0.04)
         _send_key(win32con.VK_RETURN)
-        # Small wait so the zoom/menu transition can settle.
         time.sleep(0.35)
 
-        # 2) Additional sequence requested by user: Alt+H, F, 1
         _send_hotkey([win32con.VK_MENU], ord("H"))
         time.sleep(0.06)
         _send_key(ord("F"))
@@ -273,96 +194,13 @@ def _type_text(text: str):
 
 
 def _screen_metrics():
+    if not HAS_NATIVE_EVENTS:
+        return 0, 0, 1920, 1080
     vx = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN)
     vy = win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
     vw = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN)
     vh = win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
     return vx, vy, max(1, vw), max(1, vh)
-
-
-def _to_absolute(x: int, y: int) -> tuple[int, int]:
-    vx, vy, vw, vh = _screen_metrics()
-    ax = int((x - vx) * 65535 / (vw - 1))
-    ay = int((y - vy) * 65535 / (vh - 1))
-    return max(0, min(65535, ax)), max(0, min(65535, ay))
-
-
-def _mouse_move_abs(x: int, y: int):
-    # Prefer direct pixel positioning (most robust across DPI/multi-monitor setups).
-    try:
-        win32api.SetCursorPos((int(x), int(y)))
-        return
-    except Exception:
-        pass
-
-    # Fallback to normalized absolute events if SetCursorPos is unavailable.
-    ax, ay = _to_absolute(x, y)
-    win32api.mouse_event(
-        win32con.MOUSEEVENTF_MOVE | win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_VIRTUALDESK,
-        ax,
-        ay,
-        0,
-        0,
-    )
-
-
-def _mouse_down():
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-
-
-def _mouse_up():
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-
-
-class PenDevice:
-    def __init__(self):
-        self.pointer_id = 1
-        self.frame_id = 0
-        self.initialized = False
-        self.mode = "pen"
-        
-        if HAS_PEN_INJECTION:
-            if _InitializePointerDeviceInjection(10, 1, 3):
-                self.initialized = True
-                self.mode = "pen"
-            elif _InitializePointerDeviceInjection(11, 1, 2):
-                self.initialized = True
-                self.mode = "touch"
-
-    def _inject(self, x: int, y: int, flags: int, pressure: int = 512):
-        if not self.initialized:
-            _mouse_move_abs(x, y)
-            if flags & POINTER_FLAG_DOWN: _mouse_down()
-            elif flags & POINTER_FLAG_UP: _mouse_up()
-            return True
-        
-        info = POINTER_TYPE_INFO()
-        info.type = 3 if self.mode == "pen" else 2
-        p = info.penInfo
-        p.pointerInfo.pointerType = info.type
-        p.pointerInfo.pointerId = self.pointer_id
-        p.pointerInfo.frameId = self.frame_id
-        p.pointerInfo.ptPixelLocation.x = int(x)
-        p.pointerInfo.ptPixelLocation.y = int(y)
-        p.pointerInfo.pointerFlags = flags
-        p.pointerInfo.dwTime = int(time.time() * 1000) & 0xFFFFFFFF
-        p.penFlags = PEN_FLAG_NONE
-        p.penMask = PEN_MASK_PRESSURE
-        p.pressure = int(pressure)
-        
-        self.frame_id += 1
-        return _InjectPointerInput(1, ctypes.byref(info))
-
-    def down(self, x: int, y: int, pressure: int = 512):
-        return self._inject(x, y, POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_CONFIDENCE | POINTER_FLAG_PRIMARY, pressure)
-
-    def move(self, x: int, y: int, pressure: int = 512):
-        return self._inject(x, y, POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_CONFIDENCE | POINTER_FLAG_PRIMARY, pressure)
-
-    def up(self, x: int, y: int):
-        return self._inject(x, y, POINTER_FLAG_UP | POINTER_FLAG_CONFIDENCE | POINTER_FLAG_PRIMARY, 0)
-
-pen_injector = PenDevice()
 
 
 def extract_stroke_path(image_path: str, target_w: int, target_h: int) -> list[tuple[int, int]]:
@@ -402,9 +240,10 @@ def _skeletonize(binary_img):
 
 def _skeleton_to_path(skeleton):
     pts = [(c, r) for r, c in zip(*np.where(skeleton > 0))]
+    # Basic sorting to keep stroke order somewhat sane
     pts.sort(key=lambda p: (p[0], p[1]))
-    if len(pts) > 100:
-        step = max(1, len(pts) // 100)
+    if len(pts) > 150:
+        step = max(1, len(pts) // 150)
         pts = pts[::step]
     return pts
 
@@ -413,65 +252,51 @@ def _fallback_path(w, h):
     return [(w // 2, int(h * t)) for t in [i / 10 for i in range(11)]]
 
 
-def _apply_transform(calibration, x: float, y: float, scaling_factor: float = 1.0) -> tuple[int, int]:
-    matrix = getattr(calibration, "transform_matrix", None) or []
-    if matrix and len(matrix) == 3 and len(matrix[0]) == 3:
-        m = np.array(matrix, dtype=np.float64)
-        vec = np.array([x, y, 1.0], dtype=np.float64)
-        tx, ty, tw = m @ vec
-        if abs(tw) > 1e-9:
-            final_x, final_y = tx / tw, ty / tw
-        else:
-            final_x, final_y = calibration.write_area_x + x, calibration.write_area_y + y
-    else:
-        final_x, final_y = calibration.write_area_x + x, calibration.write_area_y + y
-        
-    return int(final_x * scaling_factor), int(final_y * scaling_factor)
-
-
 def _draw_stroke(
     job: WriteJob,
     points: list[tuple[int, int]],
     speed: str,
-    calibration,
+    translator: CoordinateTranslator,
     origin_x: int,
     origin_y: int,
     point_delay_s: float,
-    pressure_base: float,
-    scaling_factor: float,
 ):
-    if not HAS_NATIVE_EVENTS or not points:
+    if not points:
         return
 
     speed_mul = {"slow": 1.7, "normal": 1.0, "fast": 0.65}.get(speed, 1.0)
-    base_delay = max(0.001, point_delay_s * speed_mul)
+    base_delay = max(0.0005, point_delay_s * speed_mul)
 
-    sx, sy = _apply_transform(calibration, origin_x + points[0][0], origin_y + points[0][1], scaling_factor)
-    pen_injector.down(sx, sy, int(pressure_base * 1024))
+    vx, vy, vw, vh = _screen_metrics()
+
+    # Apply smoothing
+    if len(points) >= 4:
+        # Use Catmull-Rom for natural curvature
+        smoothed_points = stroke_proc.get_catmull_rom_spline(points, num_points=5)
+    else:
+        # Simple subdivision for short strokes
+        smoothed_points = stroke_proc.smooth_bezier(points, steps_per_segment=3)
+
+    def to_win(px, py):
+        tx, ty = translator.to_windows_coordinates(px, py)
+        return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
+
+    # First point
+    fx, fy = to_win(origin_x + smoothed_points[0][0], origin_y + smoothed_points[0][1])
+    input_mgr.down(fx, fy)
     time.sleep(base_delay)
 
-    for i in range(1, len(points)):
+    for i in range(1, len(smoothed_points)):
         if job.cancelled:
             break
-        px, py = points[i]
-        ppx, ppy = points[i - 1]
-        dist = math.sqrt((px - ppx) ** 2 + (py - ppy) ** 2)
-        segments = max(1, int(dist / 2.5))
-        for s in range(1, segments + 1):
-            if job.cancelled:
-                break
-            t = s / segments
-            ix = int(ppx + (px - ppx) * t)
-            iy = int(ppy + (py - ppy) * t)
-            ax, ay = _apply_transform(calibration, origin_x + ix, origin_y + iy, scaling_factor)
-            
-            # Simple sinusoid pressure variation
-            p_val = pressure_base * (0.8 + 0.4 * math.sin(t * math.pi))
-            pen_injector.move(ax, ay, int(p_val * 1024))
-            time.sleep(base_delay / segments)
+        px, py = smoothed_points[i]
+        ax, ay = to_win(origin_x + px, origin_y + py)
+        input_mgr.move_to(ax, ay)
+        time.sleep(base_delay / 2.0)
 
-    ex, ey = _apply_transform(calibration, origin_x + points[-1][0], origin_y + points[-1][1], scaling_factor)
-    pen_injector.up(ex, ey)
+    # Last point
+    lx, ly = to_win(origin_x + smoothed_points[-1][0], origin_y + smoothed_points[-1][1])
+    input_mgr.up(lx, ly)
     time.sleep(base_delay)
 
 
@@ -488,7 +313,6 @@ def write_text_to_screen(
     point_delay_s: float = 0.005,
     pressure: float = 0.7,
 ):
-    _ = rotation_variation
     if not HAS_NATIVE_EVENTS:
         job.status = "error"
         job.message = "Native Win32 events not available."
@@ -499,6 +323,8 @@ def write_text_to_screen(
         words = text.split()
         all_chars = [c for w in words for c in (list(w) + [" "])]
         job.chars_total = len(all_chars)
+
+        translator = CoordinateTranslator(calibration)
 
         start_x = 0
         start_y = 0
@@ -526,6 +352,7 @@ def write_text_to_screen(
             if job.cancelled:
                 break
 
+            # Word width estimation
             ww = sum(
                 (
                     (sum(v.width for v in profile.characters.get(c, [])) / max(len(profile.characters.get(c, [])), 1))
@@ -560,26 +387,26 @@ def write_text_to_screen(
                 scale = font_size_scale * random.uniform(1 - size_variation, 1 + size_variation)
                 cw = int(variant.width * scale * calibration.zoom_level)
                 ch = int(variant.height * scale * calibration.zoom_level)
-                vy = int(random.uniform(-vertical_jitter, vertical_jitter))
+
+                # Correctly define vy within the scope of the character processing
+                char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
                 points = extract_stroke_path(variant.image_path, cw, ch)
                 _draw_stroke(
                     job=job,
                     points=points,
                     speed=speed,
-                    calibration=calibration,
+                    translator=translator,
                     origin_x=cursor_x,
-                    origin_y=cursor_y + vy,
+                    origin_y=cursor_y + char_v_jitter,
                     point_delay_s=point_delay_s,
-                    pressure_base=pressure,
-                    scaling_factor=getattr(calibration, "scaling_factor", 1.0),
                 )
                 cursor_x += cw + int(profile.char_spacing * calibration.zoom_level)
                 job.chars_done += 1
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
             cursor_x += word_sp
-            time.sleep(max(0.002, point_delay_s * 3))
+            time.sleep(max(0.001, point_delay_s * 2))
 
         job.status = "done" if not job.cancelled else "cancelled"
         job.message = "Fertig!" if not job.cancelled else "Abgebrochen"
