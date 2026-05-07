@@ -26,6 +26,7 @@ export default function OneNoteScreen() {
   const [profiles,     setProfiles]     = useState<ProfileSummary[]>([]);
   const [calName,      setCalName]      = useState("Standard");
   const [speed,        setSpeed]        = useState<WriteSpeed>("normal");
+  const [wordsPerSecond, setWordsPerSecond] = useState(1.5);
   const [scalingFactor, setScalingFactor] = useState(1.0);
   const [jobId,        setJobId]        = useState<string|null>(null);
   const [calWaiting,   setCalWaiting]   = useState(false);
@@ -51,6 +52,7 @@ export default function OneNoteScreen() {
           write_area_x: 0, write_area_y: 0,
           write_area_width: 1200, write_area_height: 800,
           line_height_px: 26, zoom_level: 1.0, transform_matrix: [], created_at: "",
+          first_line_y: 0, second_line_y: 0,
         };
         const saved = await createCalibration(cal);
         await computeCalibration(saved.id);
@@ -112,6 +114,7 @@ export default function OneNoteScreen() {
       calibration_id: activeCalibration.id,
       text: onenoteText,
       speed,
+      words_per_second: wordsPerSecond,
       font_size_scale: 1.0,
       size_variation: 0.10,
       rotation_variation: 3.0,
@@ -241,18 +244,19 @@ export default function OneNoteScreen() {
 
         {/* Speed */}
         <div>
-          <p className="label">Schreibgeschwindigkeit</p>
-          <div className="flex gap-1.5">
-            {(["slow","normal","fast"] as const).map((s: WriteSpeed) => (
-              <button key={s} onClick={() => setSpeed(s)}
-                className={clsx("flex-1 py-1.5 rounded-lg text-xs border transition-all",
-                  speed === s
-                    ? "bg-accent-gold/15 text-accent-gold border-accent-gold/30"
-                    : "bg-white/5 text-ink-400 border-white/8 hover:bg-white/10")}>
-                {s === "slow" ? "Langsam" : s === "normal" ? "Normal" : "Schnell"}
-              </button>
-            ))}
+          <p className="label flex justify-between">
+            <span>Schreibgeschwindigkeit</span>
+            <span className="text-accent-gold font-mono">{wordsPerSecond} w/s</span>
+          </p>
+          <div className="flex items-center gap-2">
+            <input
+              type="range" min="0.1" max="5.0" step="0.1"
+              className="flex-1 accent-accent-gold h-1.5 bg-white/5 rounded-lg appearance-none cursor-pointer"
+              value={wordsPerSecond}
+              onChange={e => setWordsPerSecond(parseFloat(e.target.value))}
+            />
           </div>
+          <p className="text-[10px] text-ink-500 mt-1">Bis zu 5 Wörter pro Sekunde (Ultra Mode)</p>
         </div>
 
         {/* Scaling */}

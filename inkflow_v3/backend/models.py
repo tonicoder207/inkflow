@@ -12,6 +12,7 @@ class CharacterVariant(BaseModel):
     width: int
     height: int
     baseline_offset: int = 0
+    strokes: Optional[list[list[tuple[int, int]]]] = None
 
 class HandwritingProfile(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
@@ -95,6 +96,10 @@ class CalibrationProfile(BaseModel):
     write_area_height: int = 800
     line_height_px: int = 40
     zoom_level: float = 1.0
+    line_top_offset: int = 0
+    line_bottom_offset: int = 0
+    first_line_y: int = 0
+    second_line_y: int = 0
     transform_matrix: list[list[float]] = []
     created_at: str = ""
     scaling_factor: float = 1.0
@@ -104,6 +109,7 @@ class WriteRequest(BaseModel):
     calibration_id: str
     text: str
     speed: str = "normal"      # slow | normal | fast
+    words_per_second: float = 1.0
     font_size_scale: float = 1.0
     size_variation: float = 0.10
     rotation_variation: float = 3.0

@@ -42,11 +42,18 @@ async def compute_from_points(cal_id: str):
     After user has clicked the calibration points,
     compute write area dimensions, line height and perspective transform.
     Preferred scheme: 4 points (top_left, top_right, bottom_right, bottom_left).
+    Also supports first_line and second_line for precision height.
     """
     try: cal = load_calibration(cal_id)
     except FileNotFoundError: raise HTTPException(404, "Not found")
 
     pts = {p.label: p for p in cal.points}
+
+    # Precision line height from first/second line clicks
+    if "first_line" in pts and "second_line" in pts:
+        cal.first_line_y = pts["first_line"].y
+        cal.second_line_y = pts["second_line"].y
+        cal.line_height_px = abs(cal.second_line_y - cal.first_line_y)
 
     required4 = ["top_left", "top_right", "bottom_right", "bottom_left"]
     if all(name in pts for name in required4):
@@ -79,6 +86,11 @@ async def compute_from_points(cal_id: str):
 
         cal.write_area_x = int(min(tl.x, tr.x, br.x, bl.x))
         cal.write_area_y = int(min(tl.y, tr.y, br.y, bl.y))
+
+        # Add a small buffer for OneNote rule lines if not set
+        if cal.line_top_offset == 0:
+            cal.line_top_offset = 2
+
         cal.write_area_width = width
         cal.write_area_height = height
         cal.transform_matrix = matrix.tolist()
