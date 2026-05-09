@@ -7,29 +7,38 @@ import {
 } from "@/utils/api";
 import type { CalibrationProfile, CalibrationPoint, ProfileSummary, WriteRequest, WriteSpeed } from "@/types";
 import {
-  Crosshair, Play, Pause, Square, Trash2, Plus,
-  CheckCircle, AlertCircle, Loader2, Info, Feather,
+  Crosshair, 
+  Play, 
+  Pause, 
+  Square, 
+  Trash2, 
+  Plus,
+  CheckCircle, 
+  AlertCircle, 
+  Loader2, 
+  Info, 
+  Layers,
+  Monitor,
+  Zap,
+  ChevronRight,
+  Settings
 } from "lucide-react";
 import toast from "react-hot-toast";
 import clsx from "clsx";
 
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return "Unbekannter Fehler";
-}
-
 export default function OneNoteScreen() {
-  const { activeProfile, setActiveProfile, onenoteText, setOnenoteText,
-          calibrations, setCalibrations, activeCalibration, setActiveCalibration,
-          writeStatus, setWriteStatus } = useStore();
+  const { 
+    activeProfile, setActiveProfile, onenoteText, setOnenoteText,
+    calibrations, setCalibrations, activeCalibration, setActiveCalibration,
+    writeStatus, setWriteStatus 
+  } = useStore();
 
-  const [profiles,     setProfiles]     = useState<ProfileSummary[]>([]);
-  const [calName,      setCalName]      = useState("Standard");
-  const [speed,        setSpeed]        = useState<WriteSpeed>("normal");
+  const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  const [calName, setCalName] = useState("Surface Setup");
   const [wordsPerSecond, setWordsPerSecond] = useState(1.5);
   const [scalingFactor, setScalingFactor] = useState(1.0);
-  const [jobId,        setJobId]        = useState<string|null>(null);
-  const [calWaiting,   setCalWaiting]   = useState(false);
+  const [jobId, setJobId] = useState<string|null>(null);
+  const [calWaiting, setCalWaiting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval>|null>(null);
 
   useEffect(() => {
@@ -37,7 +46,6 @@ export default function OneNoteScreen() {
     listCalibrations().then(setCalibrations).catch(() => {});
   }, []);
 
-  // Listen for calibration results from the overlay window
   useEffect(() => {
     const { inkflow } = window;
     if (!inkflow?.onCalibrationPoints) return;
@@ -64,23 +72,20 @@ export default function OneNoteScreen() {
         const updated = await listCalibrations();
         setCalibrations(updated);
         setActiveCalibration(updated.find(c => c.id === saved.id) ?? null);
-        toast.success("Kalibrierung gespeichert!");
-      } catch (e: unknown) {
-        toast.error("Fehler: " + getErrorMessage(e));
+        toast.success("Calibration profile saved");
+      } catch (e: any) {
+        toast.error("Calibration error: " + e.message);
       }
     });
 
     inkflow.onCalibrationCancelled(() => {
       setCalWaiting(false);
-      toast("Kalibrierung abgebrochen");
+      toast("Calibration cancelled");
     });
 
-    return () => {
-      inkflow.removeCalibrationListeners?.();
-    };
+    return () => { inkflow.removeCalibrationListeners?.(); };
   }, [calName]);
 
-  // Poll write status
   useEffect(() => {
     if (!jobId) return;
     pollRef.current = setInterval(async () => {
@@ -89,9 +94,9 @@ export default function OneNoteScreen() {
         setWriteStatus(s);
         if (["done","error","cancelled"].includes(s.status)) {
           clearInterval(pollRef.current!);
-          if (s.status === "done")      toast.success("Fertig geschrieben!");
-          if (s.status === "error")     toast.error("Fehler: " + s.message);
-          if (s.status === "cancelled") toast("Abgebrochen");
+          if (s.status === "done") toast.success("Finished writing to OneNote!");
+          if (s.status === "error") toast.error("Write error: " + s.message);
+          if (s.status === "cancelled") toast("Writing cancelled");
         }
       } catch {}
     }, 600);
@@ -100,25 +105,22 @@ export default function OneNoteScreen() {
 
   const startCalibration = async () => {
     const { inkflow } = window;
-    if (!inkflow?.startCalibration) {
-      toast.error("Kalibrierungs-Overlay nur in der Desktop-App verfügbar");
-      return;
-    }
+    if (!inkflow?.startCalibration) return toast.error("Overlay only available in Desktop App");
     setCalWaiting(true);
-    toast("Kalibrierungs-Overlay öffnet sich — klicke 4 Ecken in OneNote", { icon: "🎯", duration: 4000 });
+    toast("Click the 4 corners of your OneNote writing area", { icon: "🎯" });
     await inkflow.startCalibration();
   };
 
   const handleStartWrite = async () => {
-    if (!activeProfile) return toast.error("Profil wählen");
-    if (!activeCalibration) return toast.error("Kalibrierung wählen");
-    if (!onenoteText.trim()) return toast.error("Text eingeben");
+    if (!activeProfile) return toast.error("Choose a profile first");
+    if (!activeCalibration) return toast.error("Calibrate OneNote first");
+    if (!onenoteText.trim()) return toast.error("Enter text to write");
 
     const req: WriteRequest = {
       profile_id: activeProfile.id,
       calibration_id: activeCalibration.id,
       text: onenoteText,
-      speed,
+      speed: "normal",
       words_per_second: wordsPerSecond,
       font_size_scale: 1.0,
       size_variation: 0.10,
@@ -133,81 +135,20 @@ export default function OneNoteScreen() {
       const status = await startWrite(req);
       setJobId(status.job_id);
       setWriteStatus(status);
-      toast("Schreibe... (Esc zum Abbrechen)", { icon: "✍️" });
-    } catch (e: unknown) {
-      toast.error(getErrorMessage(e));
-    }
+    } catch (e: any) { toast.error(e.message); }
   };
 
   const isRunning = writeStatus?.status === "running";
   const isPaused  = writeStatus?.status === "paused";
 
-  // Register Esc cancel shortcut
-  useEffect(() => {
-    const { inkflow } = window;
-    if (isRunning || isPaused) {
-      inkflow?.registerEscCancel?.();
-      inkflow?.onEscPressed?.(() => {
-        if (jobId) {
-          cancelWrite(jobId).then(() => {
-            toast("Abbruch durch Esc");
-            setJobId(null);
-            setWriteStatus(null);
-          });
-        }
-      });
-    } else {
-      inkflow?.unregisterEscCancel?.();
-      inkflow?.removeEscListeners?.();
-    }
-    return () => {
-      inkflow?.unregisterEscCancel?.();
-      inkflow?.removeEscListeners?.();
-    };
-  }, [isRunning, isPaused, jobId]);
-
   return (
-    <div className="h-full flex overflow-hidden">
-
-      {/* ── Left: Config ── */}
-      <aside className="w-64 shrink-0 border-r border-white/5 overflow-y-auto p-4 flex flex-col gap-5">
-
-        {/* Profile */}
-        <div>
-          <p className="label">Handschriftprofil</p>
-          <select className="input" value={activeProfile?.id ?? ""}
-            onChange={async e => {
-              if (!e.target.value) return;
-              try { setActiveProfile(await getProfile(e.target.value)); }
-              catch {}
-            }}>
-            <option value="">— Profil wählen —</option>
-            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </div>
-
-        {/* Calibration */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <p className="label mb-0">Kalibrierung</p>
-            <button onClick={startCalibration} disabled={calWaiting}
-              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-lg
-                         bg-accent-gold/15 text-accent-gold border border-accent-gold/25
-                         hover:bg-accent-gold/25 disabled:opacity-40 transition-all">
-              {calWaiting ? <><Loader2 size={11} className="animate-spin"/>Warte...</>
-                          : <><Plus size={11}/>Neu</>}
-            </button>
-          </div>
-
-          {/* Calibration name input */}
-          <div className="mb-2">
-            <input
-              type="text"
-              className="input text-xs"
-              placeholder="Name der Kalibrierung"
-              value={calName}
-              onChange={e => setCalName(e.target.value)}
-            />
+    <div className="max-w-6xl mx-auto flex flex-col gap-8 animate-fade-in pb-20">
+      
+      {/* Writing Progress (Dynamic Island Style) */}
+      {(isRunning || isPaused) && writeStatus && (
+        <div className="dynamic-island w-[400px] gap-4">
+          <div className="w-8 h-8 rounded-full bg-apple-blue/20 flex items-center justify-center">
+            {isRunning ? <Loader2 size={16} className="animate-spin text-apple-blue" /> : <Pause size={14} className="text-apple-blue" />}
           </div>
 
           {calWaiting && (
@@ -219,33 +160,8 @@ export default function OneNoteScreen() {
                 2. Klicke Grundlinie 1 & 2
               </p>
             </div>
-          )}
-
-          {calibrations.length === 0 && !calWaiting ? (
-            <p className="text-xs text-ink-500 leading-relaxed">
-              Noch keine Kalibrierung. Klicke „Neu" und folge den Anweisungen.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-1.5">
-              {calibrations.map(c => (
-                <div key={c.id}
-                  onClick={() => setActiveCalibration(c)}
-                  className={clsx(
-                    "flex items-center justify-between px-3 py-2 rounded-xl border cursor-pointer transition-all text-xs",
-                    activeCalibration?.id === c.id
-                      ? "border-accent-gold/40 bg-accent-gold/10 text-accent-gold"
-                      : "border-white/8 text-ink-300 hover:border-white/20 hover:bg-white/5",
-                  )}>
-                  <div>
-                    <span className="font-medium">{c.name}</span>
-                    <span className="text-ink-500 ml-2">Linie: {c.line_height_px}px</span>
-                  </div>
-                  <button onClick={e => { e.stopPropagation(); deleteCalibration(c.id).then(() => listCalibrations().then(setCalibrations)); }}
-                    className="p-1 rounded text-ink-500 hover:text-red-400 transition-colors">
-                    <Trash2 size={11}/>
-                  </button>
-                </div>
-              ))}
+            <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+              <div className="h-full bg-apple-blue rounded-full transition-all" style={{ width: `${writeStatus.progress * 100}%` }} />
             </div>
           )}
         </div>
@@ -291,141 +207,192 @@ export default function OneNoteScreen() {
         {/* Info */}
         <div className="glass rounded-xl p-3 text-[11px] text-ink-400 leading-relaxed">
           <div className="flex gap-2">
-            <Info size={12} className="text-accent-gold shrink-0 mt-0.5"/>
-            <span>
-              Öffne OneNote, klicke „Neu" für die Kalibrierung.
-              Ein transparentes Overlay erscheint — klicke oben-links
-              , oben-rechts, unten-rechts und unten-links auf deine Schreibfläche.
-            </span>
+            {isPaused ? (
+              <button onClick={() => jobId && resumeWrite(jobId)} className="p-1.5 hover:text-apple-system-green transition-colors"><Play size={16} fill="currentColor"/></button>
+            ) : (
+              <button onClick={() => jobId && pauseWrite(jobId)} className="p-1.5 hover:text-white transition-colors"><Pause size={16}/></button>
+            )}
+            <button onClick={() => jobId && cancelWrite(jobId)} className="p-1.5 hover:text-apple-system-red transition-colors"><Square size={16} fill="currentColor"/></button>
           </div>
         </div>
-      </aside>
+      )}
 
-      {/* ── Center: Text + Controls ── */}
-      <main className="flex-1 flex flex-col">
-
-        {/* Toolbar */}
-        <div className="flex items-center gap-3 px-5 py-3 border-b border-white/5 shrink-0">
-          <div className="flex items-center gap-2 text-sm text-ink-400">
-            <Feather size={15} className="text-accent-gold"/>
-            <span className="font-medium text-white">OneNote Writer</span>
-          </div>
-          <div className="flex-1"/>
-
-          {/* Write controls */}
-          {!isRunning && !isPaused && (
-            <button onClick={handleStartWrite}
-              disabled={!activeProfile || !activeCalibration || !onenoteText.trim()}
-              className="btn-primary">
-              <Play size={14}/>
-              Start Writing
-            </button>
-          )}
-          {isRunning && (
-            <>
-              <button onClick={() => jobId && pauseWrite(jobId)} className="btn-ghost">
-                <Pause size={14}/>Pause
-              </button>
-              <button onClick={() => jobId && cancelWrite(jobId)} className="btn-danger">
-                <Square size={14}/>Stop
-              </button>
-            </>
-          )}
-          {isPaused && (
-            <>
-              <button onClick={() => jobId && resumeWrite(jobId)} className="btn-primary">
-                <Play size={14}/>Weiter
-              </button>
-              <button onClick={() => jobId && cancelWrite(jobId)} className="btn-danger">
-                <Square size={14}/>Stop
-              </button>
-            </>
-          )}
+      {/* Header */}
+      <header className="flex items-end justify-between">
+        <div className="space-y-1">
+          <h2 className="title-large flex items-center gap-3">
+            OneNote Writer <Layers className="text-apple-blue" size={28} />
+          </h2>
+          <p className="text-apple-gray-300 text-lg">Inject handwriting directly into your digital notebook.</p>
         </div>
+        <button 
+          onClick={handleStartWrite}
+          disabled={!activeProfile || !activeCalibration || !onenoteText.trim() || isRunning}
+          className="btn-apple-primary min-w-[180px] py-4"
+        >
+          {isRunning ? <><Loader2 size={18} className="animate-spin" /> Working...</> : <><Zap size={18} fill="currentColor" /> Start Writing</>}
+        </button>
+      </header>
 
-        {/* Status bar */}
-        {writeStatus && !["idle"].includes(writeStatus.status) && (
-          <div className={clsx(
-            "px-5 py-2 border-b border-white/5 flex items-center gap-3 text-xs shrink-0",
-            writeStatus.status === "done"   ? "bg-emerald-500/8"  :
-            writeStatus.status === "error"  ? "bg-red-500/8"      :
-            writeStatus.status === "running"? "bg-accent-gold/5"  : "bg-white/3",
-          )}>
-            {writeStatus.status === "running"   && <Loader2 size={13} className="animate-spin text-accent-gold"/>}
-            {writeStatus.status === "done"       && <CheckCircle size={13} className="text-emerald-400"/>}
-            {writeStatus.status === "error"      && <AlertCircle size={13} className="text-red-400"/>}
-            {writeStatus.status === "paused"     && <Pause size={13} className="text-amber-400"/>}
-            {writeStatus.status === "cancelled"  && <Square size={13} className="text-ink-400"/>}
-
-            <span className="text-ink-200">{writeStatus.message}</span>
-
-            <div className="flex-1 h-1 bg-white/8 rounded-full overflow-hidden">
-              <div className="h-full bg-accent-gold rounded-full transition-all duration-300"
-                style={{ width: `${writeStatus.progress * 100}%` }}/>
+      <div className="grid grid-cols-12 gap-8">
+        {/* Left: Setup & Calibration */}
+        <div className="col-span-4 space-y-6">
+          <section className="apple-card space-y-6">
+            <div>
+              <h4 className="title-section">1. Target Model</h4>
+              <select 
+                className="apple-input bg-white/5" 
+                value={activeProfile?.id ?? ""}
+                onChange={async e => {
+                  if (!e.target.value) return;
+                  try { setActiveProfile(await getProfile(e.target.value)); } catch {}
+                }}
+              >
+                <option value="">— Select Profile —</option>
+                {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
             </div>
 
-            <span className="text-ink-400 font-mono">
-              {writeStatus.chars_done}/{writeStatus.chars_total}
-            </span>
-          </div>
-        )}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="title-section mb-0">2. Screen Mapping</h4>
+                <button 
+                  onClick={startCalibration} 
+                  disabled={calWaiting}
+                  className="text-xs font-bold text-apple-blue hover:underline flex items-center gap-1"
+                >
+                  <Plus size={14}/> Add New
+                </button>
+              </div>
 
-        {/* Text input */}
-        <div className="flex-1 p-5">
-          <textarea
-            className="input h-full resize-none font-serif text-sm leading-relaxed"
-            placeholder={"Text der in OneNote geschrieben werden soll…\n\nInkFlow simuliert echte Schreibbewegungen mit deiner Handschrift.\nJeder Buchstabe wird einzeln mit der Maus gezeichnet."}
-            value={onenoteText}
-            onChange={e => setOnenoteText(e.target.value)}
-            disabled={isRunning || isPaused}
-          />
-        </div>
-      </main>
+              {calWaiting ? (
+                <div className="bg-apple-blue/10 border border-apple-blue/20 rounded-apple-sm p-4 text-center space-y-3 animate-pulse">
+                  <Crosshair className="mx-auto text-apple-blue" size={24} />
+                  <p className="text-[11px] font-bold text-apple-blue uppercase tracking-widest">Calibration Mode Active</p>
+                  <p className="text-[10px] text-apple-gray-200">Click the 4 corners of your OneNote area in order.</p>
+                </div>
+              ) : calibrations.length === 0 ? (
+                <div className="bg-white/5 rounded-apple-sm p-4 text-center border border-dashed border-white/10">
+                  <p className="text-[11px] text-apple-gray-400 font-medium">No calibration profiles found.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {calibrations.map(c => (
+                    <div 
+                      key={c.id}
+                      onClick={() => setActiveCalibration(c)}
+                      className={clsx(
+                        "group flex items-center justify-between p-3 rounded-apple-sm border transition-all cursor-pointer",
+                        activeCalibration?.id === c.id 
+                          ? "bg-apple-blue/10 border-apple-blue/30 text-white" 
+                          : "bg-white/5 border-white/5 text-apple-gray-300 hover:bg-white/10"
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Monitor size={14} className={activeCalibration?.id === c.id ? "text-apple-blue" : "text-apple-gray-400"} />
+                        <span className="text-xs font-bold">{c.name}</span>
+                      </div>
+                      <button 
+                        onClick={e => { e.stopPropagation(); deleteCalibration(c.id).then(() => listCalibrations().then(setCalibrations)); }}
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:text-apple-system-red transition-all"
+                      >
+                        <Trash2 size={12}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
 
-      {/* ── Right: Status ── */}
-      <aside className="w-52 shrink-0 border-l border-white/5 p-4 flex flex-col gap-4 overflow-y-auto">
-        <div>
-          <p className="label">Status</p>
-          <div className="flex flex-col gap-2 text-xs">
-            <StatusRow label="Profil"       value={activeProfile?.name ?? "—"} ok={!!activeProfile}/>
-            <StatusRow label="Kalibrierung" value={activeCalibration?.name ?? "—"} ok={!!activeCalibration}/>
-            <StatusRow label="Text"         value={`${onenoteText.length} Zeichen`} ok={onenoteText.length>0}/>
-            <StatusRow label="Geschwindigkeit" value={speed} ok={true}/>
-          </div>
-        </div>
+          <section className="apple-card space-y-6">
+            <h4 className="title-section">Advanced Controls</h4>
+            
+            <div className="space-y-4">
+              <div>
+                <div className="flex justify-between text-[11px] font-bold uppercase tracking-tight mb-2">
+                  <span className="text-apple-gray-300">Writing Cadence</span>
+                  <span className="text-apple-blue">{wordsPerSecond} w/s</span>
+                </div>
+                <input 
+                  type="range" min="0.1" max="5.0" step="0.1"
+                  className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-apple-blue"
+                  value={wordsPerSecond}
+                  onChange={e => setWordsPerSecond(parseFloat(e.target.value))}
+                />
+              </div>
 
-        {activeCalibration && (
-          <div>
-            <p className="label">Kalibrierung</p>
-            <div className="text-[11px] text-ink-400 space-y-1">
-              <div className="flex justify-between"><span>Zeilenhöhe</span><span className="font-mono">{activeCalibration.line_height_px}px</span></div>
-              <div className="flex justify-between"><span>Breite</span><span className="font-mono">{activeCalibration.write_area_width}px</span></div>
-              <div className="flex justify-between"><span>Zoom</span><span className="font-mono">{activeCalibration.zoom_level}×</span></div>
+              <div>
+                <div className="flex justify-between text-[11px] font-bold uppercase tracking-tight mb-2">
+                  <span className="text-apple-gray-300">Display Scaling</span>
+                  <span className="text-apple-blue">{Math.round(scalingFactor * 100)}%</span>
+                </div>
+                <input 
+                  type="range" min="1" max="2.5" step="0.25"
+                  className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-apple-blue"
+                  value={scalingFactor}
+                  onChange={e => setScalingFactor(parseFloat(e.target.value))}
+                />
+              </div>
+            </div>
+          </section>
+
+          <div className="p-5 apple-glass border-white/5 rounded-apple flex gap-4 items-start">
+            <Info className="text-apple-blue shrink-0" size={18} />
+            <div className="space-y-1">
+              <p className="text-[11px] font-bold text-white uppercase tracking-tight">Security Fail-Safe</p>
+              <p className="text-[10px] text-apple-gray-300 leading-relaxed">
+                Move your cursor to any screen corner or press <kbd className="bg-black px-1 border border-white/10">ESC</kbd> to immediately stop the writer.
+              </p>
             </div>
           </div>
-        )}
+        </div>
 
-        <div className="mt-auto">
-          <p className="label">Hinweise</p>
-          <div className="text-[11px] text-ink-500 space-y-1">
-            <p>Maus → Ecke = Notbremse</p>
-            <p>Schreibt in aktives Fenster</p>
-            <p>OneNote vorher öffnen</p>
-            <p><kbd className="bg-white/5 px-1 rounded border border-white/10 font-mono">Esc</kbd> = Schreiben abbrechen</p>
+        {/* Right: Text Input */}
+        <div className="col-span-8 space-y-6">
+          <div className="apple-card p-0 flex flex-col h-[500px] overflow-hidden">
+            <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <CheckCircle className={clsx("transition-colors", onenoteText.length > 0 ? "text-apple-system-green" : "text-apple-gray-400")} size={16} />
+                <span className="text-xs font-bold uppercase tracking-widest text-apple-gray-200">Content Engine</span>
+              </div>
+              <div className="text-[10px] font-bold text-apple-gray-400 uppercase tracking-widest">
+                {onenoteText.length} Characters
+              </div>
+            </div>
+            <textarea 
+              className="flex-1 w-full bg-transparent p-8 outline-none text-xl leading-relaxed text-apple-gray-100 placeholder:text-apple-gray-400/20 font-medium resize-none"
+              placeholder="Paste or type the text you want InkFlow to write into OneNote..."
+              value={onenoteText} 
+              onChange={e => setOnenoteText(e.target.value)}
+              disabled={isRunning || isPaused}
+            />
+          </div>
+
+          <div className="grid grid-cols-3 gap-6">
+            <div className="apple-card p-5 space-y-2">
+              <div className="w-8 h-8 rounded-full bg-apple-blue/10 flex items-center justify-center text-apple-blue">
+                <CheckCircle size={16} />
+              </div>
+              <h5 className="text-xs font-bold">Calibration</h5>
+              <p className="text-[10px] text-apple-gray-400">{activeCalibration ? "Active: " + activeCalibration.name : "Mapping required"}</p>
+            </div>
+            <div className="apple-card p-5 space-y-2">
+              <div className="w-8 h-8 rounded-full bg-apple-blue/10 flex items-center justify-center text-apple-blue">
+                <Monitor size={16} />
+              </div>
+              <h5 className="text-xs font-bold">Scaling</h5>
+              <p className="text-[10px] text-apple-gray-400">Fixed at {Math.round(scalingFactor * 100)}% DPI</p>
+            </div>
+            <div className="apple-card p-5 space-y-2">
+              <div className="w-8 h-8 rounded-full bg-apple-blue/10 flex items-center justify-center text-apple-blue">
+                <Zap size={16} />
+              </div>
+              <h5 className="text-xs font-bold">Ready</h5>
+              <p className="text-[10px] text-apple-gray-400">Engine in standby mode</p>
+            </div>
           </div>
         </div>
-      </aside>
-    </div>
-  );
-}
-
-function StatusRow({ label, value, ok }: { label:string; value:string; ok:boolean }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-ink-500">{label}</span>
-      <div className="flex items-center gap-1.5">
-        <span className={clsx("truncate max-w-24", ok ? "text-ink-200" : "text-ink-500")}>{value}</span>
-        <div className={clsx("w-1.5 h-1.5 rounded-full shrink-0", ok ? "bg-emerald-400" : "bg-ink-600")}/>
       </div>
     </div>
   );

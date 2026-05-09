@@ -5,7 +5,8 @@ InkFlow v3 is a Windows-based application designed to inject native digital ink 
 
 ## 🏗️ Architecture
 The project follows a decoupled architecture:
-- **Frontend**: Electron-based UI.
+- **Frontend**: Electron-based UI using React (Vite) + Tailwind CSS.
+- **Design System**: Implements a "macOS Sequoia" look with glassmorphism, translucency, and Inter typography.
 - **Backend**: Python (FastAPI) running as a sidecar process.
 - **Communication**: Frontend talks to Backend via REST API (default `localhost:8000`).
 - **Pen Injection**: Uses low-level Windows APIs to inject ink strokes into the system.
@@ -24,6 +25,7 @@ The project follows a decoupled architecture:
 
 ## ✅ What Works
 - **FastAPI Backend**: Fully functional routing and health checks.
+- **UI Design**: Modern Apple aesthetic (Glassmorphism, 18px rounded corners, dark mode by default).
 - **Profile Management**: CRUD operations for user profiles.
 - **Calibration Engine**: Supports 4-point perspective transformation to map screen coordinates to OneNote's writing area.
 - **Electron Shell**: Handles bundling, installer creation, and admin privilege requests.
@@ -49,6 +51,7 @@ The project follows a decoupled architecture:
 
 ## 📋 AI Instructions
 When working on this project:
-1. **Always check DPI/Scaling**: If logic involves screen coordinates, assume Windows scaling (125%, 150%, etc.) might be active.
-2. **Path Safety**: Use `os.path.join` and absolute paths where possible, as the current working directory changes between dev and production.
-3. **Pydantic Types**: Use the models in `backend/models.py` for API data consistency.
+1. **Maintain the Apple Aesthetic**: Use the custom Tailwind utilities (e.g., `apple-glass`, `btn-apple-primary`, `title-large`). Avoid generic colors; use the `apple-gray` scale.
+2. **Always check DPI/Scaling**: If logic involves screen coordinates, assume Windows scaling (125%, 150%, etc.) might be active.
+3. **Path Safety**: Use `os.path.join` and absolute paths where possible.
+4. **Pydantic Types**: Use the models in `backend/models.py` for API data consistency.
