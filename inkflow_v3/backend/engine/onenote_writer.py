@@ -167,7 +167,7 @@ def prepare_onenote() -> bool:
 
 
 def scroll_onenote(amount: int):
-    """Scroll OneNote down using the mouse wheel."""
+    """Scroll OneNote using the mouse wheel. amount in notches (-120 = one notch down)"""
     if not HAS_NATIVE_EVENTS: return
     win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
 
@@ -247,8 +247,7 @@ def _skeleton_to_multi_strokes(skeleton):
 
         MAX_GAP = 7.0
         while pts:
-            # Sort once per stroke start
-            pts.sort(key=lambda p: (p[1], p[0])) # Top to bottom, left to right
+            pts.sort(key=lambda p: (p[1], p[0])) # Top to bottom
             current = pts.pop(0)
             current_stroke = [tuple(current)]
 
@@ -266,9 +265,8 @@ def _skeleton_to_multi_strokes(skeleton):
                 current_stroke.append(tuple(current))
 
             if len(current_stroke) >= 1:
-                # Optimized downsampling
-                if len(current_stroke) > 30:
-                    step = len(current_stroke) // 30
+                if len(current_stroke) > 25:
+                    step = len(current_stroke) // 25
                     current_stroke = current_stroke[::step]
                 all_strokes.append(current_stroke)
 
@@ -278,6 +276,14 @@ def _skeleton_to_multi_strokes(skeleton):
 
 def _fallback_path(w, h):
     return [(w // 2, int(h * t)) for t in [i / 10 for i in range(11)]]
+
+
+def _precise_sleep(duration):
+    """High-resolution sleep."""
+    if duration <= 0: return
+    end_time = time.perf_counter() + duration
+    while time.perf_counter() < end_time:
+        pass
 
 
 def _draw_strokes(
@@ -299,22 +305,22 @@ def _draw_strokes(
             return int(tx), int(ty)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
-    # SPEED OVERHAUL
-    # 5 words/sec = 25 chars/sec = 40ms per char.
-    # If a char has 2 strokes with 10 points each = 20 points.
-    # 40ms / 20 points = 2ms per point.
+    # SPEED OVERHAUL V8.1
+    is_ultra = words_per_second >= 4.0
 
-    is_ultra = words_per_second >= 3.5
-    # For ultra speed, we use almost no delay.
-    move_delay = 0.0001 if is_ultra else (0.01 / (words_per_second * 5))
-    stroke_gap = 0.0005 if is_ultra else (0.02 / words_per_second)
+    # 5 w/s = 200ms per word = 40ms per char.
+    # If 2 strokes, 20ms per stroke.
+    # If 10 points, 2ms per point.
+    move_delay = 0 if is_ultra else (0.01 / (words_per_second * 5))
+    stroke_gap = 0 if is_ultra else (0.015 / words_per_second)
 
     for stroke in strokes:
         if job.cancelled: break
         if not stroke: continue
 
-        # Continuous Line Rendering
-        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=2 if is_ultra else 4)
+        # Reduced point count for speed in Ultra mode
+        num_pts = 2 if is_ultra else 4
+        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=num_pts)
 
         # Pen down
         fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
@@ -324,12 +330,12 @@ def _draw_strokes(
             if job.cancelled: break
             ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
             input_mgr.move_to(ax, ay, pressure=pressure_base)
-            if move_delay > 0.0005: time.sleep(move_delay)
+            if move_delay > 0.0005: _precise_sleep(move_delay)
 
         # Pen up
         lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        if stroke_gap > 0.0005: time.sleep(stroke_gap)
+        if stroke_gap > 0.0005: _precise_sleep(stroke_gap)
 
 
 # Characters that extend BELOW the baseline
@@ -369,7 +375,6 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
-        # Precision Alignment
         first_line_y = getattr(calibration, "first_line_y", 0)
         start_x = 0
         rel_start_y = max(0, first_line_y - calibration.write_area_y) if first_line_y > 0 else 0
@@ -385,11 +390,9 @@ def write_text_to_screen(
         word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
-        # rel_start_y is the baseline of the first line.
-        # cursor_y is the TOP of the current line.
         cursor_y = rel_start_y - line_h
         job.current_line = 0
-        job.message = f"V8.0 ULTRA-SPEED — {words_per_second} w/s"
+        job.message = f"V8.1 Giga-Speed — {words_per_second} w/s"
 
         if not prepare_onenote():
             job.status = "error"
@@ -397,15 +400,16 @@ def write_text_to_screen(
             return
         
         time.sleep(0.1)
-        scroll_threshold_y = area_h * 0.8
+        # Scroll threshold: reached bottom 15%
+        scroll_threshold_y = area_h * 0.85
         last_focus_check = time.time()
 
         for word in words:
             job.wait_if_paused()
             if job.cancelled: break
 
-            # Fast focus check
-            if job.chars_done % 20 == 0:
+            # Focused check every few chars or 3 seconds
+            if job.chars_done % 30 == 0:
                 if time.time() - last_focus_check > 3.0:
                     curr_hwnd = win32gui.GetForegroundWindow()
                     title = win32gui.GetWindowText(curr_hwnd).lower()
@@ -429,9 +433,16 @@ def write_text_to_screen(
                 job.current_line += 1
 
                 if cursor_y > scroll_threshold_y:
-                    scroll_onenote(-120)
-                    time.sleep(0.05)
-                    cursor_y -= line_h
+                    # SCROLLING IMPROVEMENT
+                    # Scroll down by multiple notches to clear space
+                    scroll_onenote(-360) # 3 notches
+                    time.sleep(0.15)
+                    # We scrolled down, so our relative Y on screen must move UP
+                    # 1 notch is usually approx 3 lines in OneNote.
+                    # This is tricky because notches don't map perfectly to pixels.
+                    # We assume 3 notches = 3-4 lines.
+                    # Let's adjust cursor_y by 3 lines.
+                    cursor_y -= (line_h * 3)
 
             for char in word:
                 job.wait_if_paused()
@@ -459,7 +470,6 @@ def write_text_to_screen(
 
                 char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
 
-                # Use pre-computed strokes
                 if hasattr(variant, 'strokes') and variant.strokes:
                     sw, sh = variant.width, variant.height
                     strokes = [[(int(x / sw * cw), int(y / sh * ch)) for x, y in s] for s in variant.strokes]
@@ -483,7 +493,7 @@ def write_text_to_screen(
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Finished!"
+        job.message = "Giga-Speed Finish!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Error: {exc}"
+        job.message = f"Giga-Error: {exc}"
