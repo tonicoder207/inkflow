@@ -76,6 +76,8 @@ _failsafe_lock = threading.Lock()
 input_mgr = InputManager()
 stroke_proc = StrokeProcessor()
 
+# Memory Cache for strokes to avoid repeated skeletonization
+_stroke_cache = {}
 
 # Backward Compatibility Layer for API
 class LegacyPenInjector:
@@ -158,14 +160,14 @@ def prepare_onenote() -> bool:
         win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
         win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
         win32gui.SetForegroundWindow(target_hwnd)
-        time.sleep(0.2)
+        time.sleep(0.1)
     except Exception:
         return False
     return True
 
 
 def scroll_onenote(amount: int):
-    """Scroll OneNote down using the mouse wheel."""
+    """Scroll OneNote using the mouse wheel. amount in notches (-120 = one notch down)"""
     if not HAS_NATIVE_EVENTS: return
     win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
 
@@ -181,6 +183,11 @@ def _screen_metrics():
 
 
 def extract_stroke_paths(image_path: str, target_w: int, target_h: int) -> list[list[tuple[int, int]]]:
+    # Check cache first
+    cache_key = (image_path, target_w, target_h)
+    if cache_key in _stroke_cache:
+        return _stroke_cache[cache_key]
+
     try:
         img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
         if img is None:
@@ -202,6 +209,7 @@ def extract_stroke_paths(image_path: str, target_w: int, target_h: int) -> list[
         for stroke in raw_strokes:
             final_strokes.append([(int(x / w * target_w), int(y / h * target_h)) for x, y in stroke])
 
+        _stroke_cache[cache_key] = final_strokes
         return final_strokes
     except Exception:
         return [_fallback_path(target_w, target_h)]
@@ -223,48 +231,59 @@ def _skeletonize(binary_img):
 
 def _skeleton_to_multi_strokes(skeleton):
     """
-    Robust stroke extraction for German characters.
-    Uses connected components to ensure separate parts (like dots) stay separate.
+    ULTRA-ROBUST stroke extraction.
+    Uses connected components to ensure dots are separate.
     """
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
 
     all_strokes = []
-    # label 0 is background
     for label in range(1, num_labels):
         comp_mask = (labels == label).astype(np.uint8)
-        pts = list(zip(*np.where(comp_mask > 0)))
-        if not pts: continue
-        pts = [[c, r] for r, c in pts]
+        pts = np.argwhere(comp_mask > 0) # returns [y, x]
+        if pts.size == 0: continue
 
-        # Within each component, still use nearest-neighbor to find the path
-        MAX_GAP = 5.0
+        # Convert to [x, y]
+        pts = pts[:, [1, 0]].tolist()
+
+        MAX_GAP = 7.0
         while pts:
-            pts.sort(key=lambda p: (p[0], p[1])) # left to right
+            pts.sort(key=lambda p: (p[1], p[0])) # Top to bottom
             current = pts.pop(0)
             current_stroke = [tuple(current)]
 
             while True:
                 if not pts: break
-                sq_distances = [(p[0]-current[0])**2 + (p[1]-current[1])**2 for p in pts]
-                idx = np.argmin(sq_distances)
-                if math.sqrt(sq_distances[idx]) > MAX_GAP: break
+                # Faster nearest neighbor
+                pts_arr = np.array(pts)
+                diffs = pts_arr - current
+                sq_dists = np.sum(diffs**2, axis=1)
+                idx = np.argmin(sq_dists)
+
+                if sq_dists[idx] > MAX_GAP**2: break
+
                 current = pts.pop(idx)
                 current_stroke.append(tuple(current))
 
             if len(current_stroke) >= 1:
-                # Detail preservation
-                if len(current_stroke) > 60:
-                    step = len(current_stroke) // 60
+                if len(current_stroke) > 25:
+                    step = len(current_stroke) // 25
                     current_stroke = current_stroke[::step]
                 all_strokes.append(current_stroke)
 
-    # Sort strokes by x-coordinate to write naturally
     all_strokes.sort(key=lambda s: s[0][0])
     return all_strokes
 
 
 def _fallback_path(w, h):
     return [(w // 2, int(h * t)) for t in [i / 10 for i in range(11)]]
+
+
+def _precise_sleep(duration):
+    """High-resolution sleep."""
+    if duration <= 0: return
+    end_time = time.perf_counter() + duration
+    while time.perf_counter() < end_time:
+        pass
 
 
 def _draw_strokes(
@@ -278,8 +297,6 @@ def _draw_strokes(
 ):
     if not strokes: return
 
-    # Total characters estimate (1 word = 5 chars)
-    # 5 w/s = 25 chars/s. Each char has multiple strokes.
     vx, vy, vw, vh = _screen_metrics()
 
     def get_coords(px, py):
@@ -288,18 +305,22 @@ def _draw_strokes(
             return int(tx), int(ty)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
-    # Ultra-Turbo: zero delay between moves
-    # But small delay between strokes for registration
-    is_ultra = words_per_second >= 3.0
-    move_delay = 0 if is_ultra else (0.1 / (words_per_second * 20))
-    stroke_delay = 0.001 if is_ultra else (0.01 / words_per_second)
+    # SPEED OVERHAUL V8.1
+    is_ultra = words_per_second >= 4.0
+
+    # 5 w/s = 200ms per word = 40ms per char.
+    # If 2 strokes, 20ms per stroke.
+    # If 10 points, 2ms per point.
+    move_delay = 0 if is_ultra else (0.01 / (words_per_second * 5))
+    stroke_gap = 0 if is_ultra else (0.015 / words_per_second)
 
     for stroke in strokes:
         if job.cancelled: break
         if not stroke: continue
 
-        # High quality curves
-        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=3 if is_ultra else 5)
+        # Reduced point count for speed in Ultra mode
+        num_pts = 2 if is_ultra else 4
+        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=num_pts)
 
         # Pen down
         fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
@@ -309,12 +330,12 @@ def _draw_strokes(
             if job.cancelled: break
             ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
             input_mgr.move_to(ax, ay, pressure=pressure_base)
-            if move_delay > 0.0001: time.sleep(move_delay)
+            if move_delay > 0.0005: _precise_sleep(move_delay)
 
         # Pen up
         lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
         input_mgr.up(lx, ly)
-        if stroke_delay > 0.001: time.sleep(stroke_delay)
+        if stroke_gap > 0.0005: _precise_sleep(stroke_gap)
 
 
 # Characters that extend BELOW the baseline
@@ -354,7 +375,6 @@ def write_text_to_screen(
 
         translator = CoordinateTranslator(calibration)
 
-        # Baseline Logic
         first_line_y = getattr(calibration, "first_line_y", 0)
         start_x = 0
         rel_start_y = max(0, first_line_y - calibration.write_area_y) if first_line_y > 0 else 0
@@ -362,17 +382,17 @@ def write_text_to_screen(
         area_w = calibration.write_area_width
         area_h = calibration.write_area_height
 
-        # Adjust scaling
-        effective_font_scale = (font_size_scale * 0.32) / max(0.1, calibration.zoom_level)
+        effective_font_scale = (font_size_scale * 0.38) / max(0.1, calibration.zoom_level)
         line_h = int(calibration.line_height_px * font_size_scale)
+        if line_h <= 0: line_h = 30
 
         char_spacing_base = int(profile.char_spacing * calibration.zoom_level)
         word_sp = int(profile.word_spacing * effective_font_scale)
 
         cursor_x = start_x
-        cursor_y = rel_start_y
+        cursor_y = rel_start_y - line_h
         job.current_line = 0
-        job.message = f"V6.0 Ultra-Speed — {words_per_second} w/s"
+        job.message = f"V8.1 Giga-Speed — {words_per_second} w/s"
 
         if not prepare_onenote():
             job.status = "error"
@@ -380,15 +400,17 @@ def write_text_to_screen(
             return
         
         time.sleep(0.1)
-        scroll_threshold_y = area_h * 0.8
+        # Scroll threshold: reached bottom 15%
+        scroll_threshold_y = area_h * 0.85
         last_focus_check = time.time()
 
         for word in words:
             job.wait_if_paused()
             if job.cancelled: break
 
-            if words_per_second < 3.0 or job.chars_done % 10 == 0:
-                if time.time() - last_focus_check > 2.0:
+            # Focused check every few chars or 3 seconds
+            if job.chars_done % 30 == 0:
+                if time.time() - last_focus_check > 3.0:
                     curr_hwnd = win32gui.GetForegroundWindow()
                     title = win32gui.GetWindowText(curr_hwnd).lower()
                     if "onenote" not in title:
@@ -411,9 +433,16 @@ def write_text_to_screen(
                 job.current_line += 1
 
                 if cursor_y > scroll_threshold_y:
-                    scroll_onenote(-120)
-                    time.sleep(0.1)
-                    cursor_y -= line_h
+                    # SCROLLING IMPROVEMENT
+                    # Scroll down by multiple notches to clear space
+                    scroll_onenote(-360) # 3 notches
+                    time.sleep(0.15)
+                    # We scrolled down, so our relative Y on screen must move UP
+                    # 1 notch is usually approx 3 lines in OneNote.
+                    # This is tricky because notches don't map perfectly to pixels.
+                    # We assume 3 notches = 3-4 lines.
+                    # Let's adjust cursor_y by 3 lines.
+                    cursor_y -= (line_h * 3)
 
             for char in word:
                 job.wait_if_paused()
@@ -464,8 +493,7 @@ def write_text_to_screen(
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Ultra-Speed Finish!"
+        job.message = "Giga-Speed Finish!"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Ultra-Error: {exc}"
-        job.message = f"Error: {exc}"
+        job.message = f"Giga-Error: {exc}"

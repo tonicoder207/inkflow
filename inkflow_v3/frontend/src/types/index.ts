@@ -36,9 +36,11 @@ export interface CalibrationProfile {
   line_height_px: number; zoom_level: number;
   transform_matrix: number[][];
   created_at: string;
+  first_line_y?: number;
+  second_line_y?: number;
 }
 export interface CalibrationPoint {
-  label: "top_left" | "top_right" | "bottom_right" | "bottom_left";
+  label: "top_left" | "top_right" | "bottom_right" | "bottom_left" | "first_line" | "second_line";
   x: number;
   y: number;
 }
@@ -51,7 +53,9 @@ export interface CalibrationComputeResult {
 export type WriteSpeed = "slow"|"normal"|"fast";
 export interface WriteRequest {
   profile_id: string; calibration_id: string; text: string;
-  speed: WriteSpeed; font_size_scale: number;
+  speed: WriteSpeed;
+  words_per_second: number;
+  font_size_scale: number;
   size_variation: number; rotation_variation: number; vertical_jitter: number;
   point_delay_s: number;
   pressure: number;
