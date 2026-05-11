@@ -6,30 +6,35 @@ import EditorScreen   from "@/components/editor/EditorScreen";
 import TrainerScreen  from "@/components/trainer/TrainerScreen";
 import OneNoteScreen  from "@/components/onenote/OneNoteScreen";
 import SettingsScreen from "@/components/settings/SettingsScreen";
+import LicenseModal from "@/components/shared/LicenseModal";
 import { checkHealth } from "@/utils/api";
+import { checkLicense } from "@/utils/license";
+import { Toaster } from "react-hot-toast";
 
 export default function App() {
-  const { screen } = useStore();
+  const { screen, license, setLicense } = useStore();
   const [online, setOnline] = useState<boolean|null>(null);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval>;
-    
     const check = () => {
-      checkHealth()
-        .then(() => {
-          setOnline(true);
-          clearInterval(timer);
-        })
-        .catch(() => {
-          setOnline(false);
-        });
+      checkHealth().then(() => { setOnline(true); clearInterval(timer); }).catch(() => { setOnline(false); });
     };
-
     check();
     timer = setInterval(check, 2000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!license.key) return;
+    checkLicense(license.key).then(res => {
+      if (res.valid) setLicense({ status: "valid", lastChecked: new Date().toISOString() });
+      else if (res.reason !== "Offline") {
+        const last = license.lastChecked ? new Date(license.lastChecked) : new Date(0);
+        if ((new Date().getTime() - last.getTime()) / (1000 * 3600 * 24) > 7) setLicense({ status: "invalid" });
+      }
+    });
+  }, [license.key]);
 
   const render = () => {
     switch (screen) {
@@ -44,6 +49,8 @@ export default function App() {
 
   return (
     <AppShell online={online}>
+      <Toaster position="bottom-center" />
+      <LicenseModal />
       {render()}
     </AppShell>
   );
