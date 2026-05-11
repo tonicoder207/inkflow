@@ -27,6 +27,15 @@ export default function SettingsScreen() {
             <div className="flex gap-2"><span className="text-apple-blue">$</span> cd backend</div>
             <div className="flex gap-2"><span className="text-apple-blue">$</span> python main.py</div>
           </div>
+          <div className="pt-2">
+            <button 
+              onClick={() => (window as any).inkflow?.openLogsFolder()}
+              className="btn-secondary w-full text-xs py-2"
+            >
+              <Server size={14} className="mr-2 inline" />
+              Open Logs Folder
+            </button>
+          </div>
         </section>
 
         {/* Tips Section */}

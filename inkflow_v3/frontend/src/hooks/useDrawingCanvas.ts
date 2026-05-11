@@ -16,52 +16,55 @@ export function useDrawingCanvas({ width, height, strokeColor="#1a1a2e", strokeW
     ctx.fillRect(0,0,width,height);
   }, [width,height,backgroundColor]);
 
-  const getPos = (e:PointerEvent, c:HTMLCanvasElement) => {
+  const getPos = useCallback((e:PointerEvent, c:HTMLCanvasElement) => {
     const r = c.getBoundingClientRect();
     return {
       x: (e.clientX - r.left) * (width / r.width),
       y: (e.clientY - r.top)  * (height / r.height),
     };
-  };
+  }, [width, height]);
 
   const startDraw = useCallback((e:PointerEvent) => {
     e.preventDefault();
     const c = canvasRef.current; if(!c) return;
-    // Capture pointer for reliable tracking even outside canvas
     c.setPointerCapture(e.pointerId);
     const ctx = c.getContext("2d")!;
     history.current.push(ctx.getImageData(0,0,width,height));
     if(history.current.length>20) history.current.shift();
     drawing.current = true;
     lastPos.current = getPos(e,c);
-  },[width,height]);
+  },[width,height,getPos]);
 
   const draw = useCallback((e:PointerEvent) => {
-    e.preventDefault();
     if(!drawing.current) return;
     const c = canvasRef.current; if(!c) return;
     const ctx = c.getContext("2d")!;
+    
     ctx.strokeStyle = strokeColor;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
-    // Pressure sensitivity: pressure > 0 means pen/stylus, 0 means mouse
-    const pressure = e.pressure > 0 ? e.pressure : 0.5;
-    ctx.lineWidth = strokeWidth * (pressure * 2);
+    // Use coalesced events for high-fidelity tracking (fixes "fast writing" issue)
+    const events = (e as any).getCoalescedEvents ? (e as any).getCoalescedEvents() : [e];
+    
+    let moved = false;
+    for (const ev of events) {
+      const pos = getPos(ev, c);
+      const pressure = ev.pressure > 0 ? ev.pressure : 0.5;
+      ctx.lineWidth = strokeWidth * (pressure * 2);
 
-    const pos = getPos(e,c);
-    if(lastPos.current) {
-      ctx.beginPath();
-      ctx.moveTo(lastPos.current.x, lastPos.current.y);
-      // Quadratic Bezier through midpoint for smooth curves
-      const mx = (lastPos.current.x + pos.x) / 2;
-      const my = (lastPos.current.y + pos.y) / 2;
-      ctx.quadraticCurveTo(lastPos.current.x, lastPos.current.y, mx, my);
-      ctx.stroke();
+      if (lastPos.current) {
+        ctx.beginPath();
+        ctx.moveTo(lastPos.current.x, lastPos.current.y);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+        moved = true;
+      }
+      lastPos.current = pos;
     }
-    lastPos.current = pos;
-    setHasContent(true);
-  },[strokeColor,strokeWidth]);
+    
+    if (moved) setHasContent(true);
+  },[strokeColor,strokeWidth,getPos]);
 
   const endDraw = useCallback((e:PointerEvent) => {
     if(!drawing.current) return;

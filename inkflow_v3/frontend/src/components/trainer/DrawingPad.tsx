@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { useDrawingCanvas } from "@/hooks/useDrawingCanvas";
-import { Eraser, RotateCcw, Save, Check, Keyboard } from "lucide-react";
+import { Eraser, RotateCcw, Save, Check, Keyboard, Loader2 } from "lucide-react";
 import clsx from "clsx";
 
 const W = 460, H = 190;

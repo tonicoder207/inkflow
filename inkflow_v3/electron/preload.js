@@ -3,6 +3,7 @@ contextBridge.exposeInMainWorld("inkflow", {
   getAppInfo:        () => ipcRenderer.invoke("get-app-info"),
   getBackendStatus:  () => ipcRenderer.invoke("backend-status"),
   openExportsFolder: () => ipcRenderer.invoke("open-exports-folder"),
+  openLogsFolder:    () => ipcRenderer.invoke("open-logs-folder"),
   showSaveDialog: o  => ipcRenderer.invoke("show-save-dialog", o),
   setAlwaysOnTop: (flag, level) => ipcRenderer.invoke("set-always-on-top", flag, level),
   setFullscreen: flag => ipcRenderer.invoke("set-fullscreen", flag),

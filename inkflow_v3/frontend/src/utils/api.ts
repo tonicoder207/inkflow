@@ -1,7 +1,17 @@
 import type { HandwritingProfile, ProfileSummary, RenderSettings, RenderResult,
   CalibrationProfile, WriteRequest, WriteStatus, CalibrationComputeResult } from "@/types";
 
-const BASE = "http://127.0.0.1:8000/api";
+let BASE = "http://127.0.0.1:8000/api";
+
+// If running in Electron, try to get the real backend URL
+if (typeof window !== "undefined" && (window as any).inkflow?.getBackendStatus) {
+  (window as any).inkflow.getBackendStatus().then((status: any) => {
+    if (status.url) {
+      BASE = `${status.url}/api`;
+      console.log("Backend URL updated from Electron:", BASE);
+    }
+  });
+}
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {

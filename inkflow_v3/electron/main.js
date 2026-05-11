@@ -27,7 +27,21 @@ const { spawn, execSync } = require("child_process");
 // FIX: Prevent DPI scaling issues so 1 pixel in Electron = 1 pixel on monitor
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
 
-const BACKEND_PORT = 8000;
+let BACKEND_PORT = 8000;
+const net = require("net");
+
+function getAvailablePort(startPort) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(startPort, "127.0.0.1", () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+    server.on("error", () => {
+      resolve(getAvailablePort(startPort + 1));
+    });
+  });
+}
 const MAX_WAIT_MS = 60000;
 const POLL_MS = 800;
 
@@ -108,6 +122,7 @@ function spawnBackend() {
     INKFLOW_PORT: String(BACKEND_PORT),
     PYTHONPATH: backendDir,
     PYTHONUNBUFFERED: "1",
+    PYTHONIOENCODING: "utf-8",
   });
 
   // For embedded Python: add Lib/site-packages to PYTHONPATH
@@ -142,7 +157,7 @@ function waitForBackend() {
           if (res.statusCode === 200 && !isResolved) {
             isResolved = true;
             ready = true;
-            log("Backend ready!");
+            log("Backend ready on port " + BACKEND_PORT);
             resolve();
           } else if (!isResolved) {
             retry();
@@ -217,6 +232,7 @@ function createWindow() {
 ipcMain.handle("get-app-info", () => ({ version: app.getVersion(), profilesDir: PROFILES_DIR, exportsDir: EXPORTS_DIR, backendReady: ready }));
 ipcMain.handle("backend-status", () => ({ ready, url: `http://127.0.0.1:${BACKEND_PORT}` }));
 ipcMain.handle("open-exports-folder", () => shell.openPath(EXPORTS_DIR));
+ipcMain.handle("open-logs-folder", () => shell.openPath(app.getPath("userData")));
 ipcMain.handle("show-save-dialog", async (_, o) => dialog.showSaveDialog(mainWindow, o));
 ipcMain.handle("set-always-on-top", (_, flag, level) => {
   if (mainWindow) mainWindow.setAlwaysOnTop(!!flag, level || "screen-saver");
@@ -307,7 +323,10 @@ ipcMain.on("calibration-cancel", () => {
 app.whenReady().then(async () => {
   log("=== InkFlow v3 starting ===");
   log("Packaged: " + IS_PACKAGED + " | Resources: " + RESOURCES_DIR);
+  
+  BACKEND_PORT = await getAvailablePort(8000);
   spawnBackend();
+  
   try { await waitForBackend(); } catch (e) { log("Backend warn: " + e.message); }
   createWindow();
   app.on("activate", () => { if (!BrowserWindow.getAllWindows().length) createWindow(); });

@@ -4,6 +4,7 @@ import { getProfile, uploadCharacter } from "@/utils/api";
 import type { HandwritingProfile } from "@/types";
 import DrawingPad from "./DrawingPad";
 import { 
+  AlertCircle,
   ArrowLeft, 
   ChevronLeft, 
   ChevronRight, 

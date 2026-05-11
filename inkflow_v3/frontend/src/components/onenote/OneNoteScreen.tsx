@@ -53,19 +53,13 @@ export default function OneNoteScreen() {
     inkflow.onCalibrationPoints(async (points: CalibrationPoint[]) => {
       setCalWaiting(false);
       try {
-        // Find line points if they exist
-        const pFirst = points.find(p => p.label === "first_line");
-        const pSecond = points.find(p => p.label === "second_line");
-
-        // Keep this temporary default in sync with backend compute fallback.
         const cal: CalibrationProfile = {
           id: "", name: calName,
           points,
           write_area_x: 0, write_area_y: 0,
           write_area_width: 1200, write_area_height: 800,
           line_height_px: 26, zoom_level: 1.0, transform_matrix: [], created_at: "",
-          first_line_y: pFirst?.y ?? 0,
-          second_line_y: pSecond?.y ?? 0,
+          first_line_y: 0, second_line_y: 0,
         };
         const saved = await createCalibration(cal);
         await computeCalibration(saved.id);
@@ -150,62 +144,15 @@ export default function OneNoteScreen() {
           <div className="w-8 h-8 rounded-full bg-apple-blue/20 flex items-center justify-center">
             {isRunning ? <Loader2 size={16} className="animate-spin text-apple-blue" /> : <Pause size={14} className="text-apple-blue" />}
           </div>
-
-          {calWaiting && (
-            <div className="glass rounded-xl p-3 mb-2 text-center animate-fade-in text-accent-gold">
-              <Crosshair size={20} className="mx-auto mb-2 animate-pulse-soft"/>
-              <p className="text-xs font-bold">Overlay aktiv!</p>
-              <p className="text-[10px] text-ink-300 mt-1 leading-tight">
-                1. Klicke 4 Ecken (TL, TR, BR, BL)<br/>
-                2. Klicke Grundlinie 1 & 2
-              </p>
+          <div className="flex-1">
+            <div className="flex justify-between text-[10px] font-bold text-apple-gray-300 uppercase mb-1">
+              <span>{writeStatus.status === "paused" ? "Paused" : "Writing to OneNote"}</span>
+              <span>{Math.round(writeStatus.progress * 100)}%</span>
             </div>
             <div className="h-1 bg-white/10 rounded-full overflow-hidden">
               <div className="h-full bg-apple-blue rounded-full transition-all" style={{ width: `${writeStatus.progress * 100}%` }} />
             </div>
-          )}
-        </div>
-
-        {/* Speed */}
-        <div>
-          <p className="label flex justify-between">
-            <span>Geschwindigkeit</span>
-            <span className={clsx("font-mono", wordsPerSecond >= 3 ? "text-red-400" : "text-accent-gold")}>
-              {wordsPerSecond} w/s
-            </span>
-          </p>
-          <div className="flex items-center gap-2">
-            <input
-              type="range" min="0.1" max="5.0" step="0.1"
-              className="flex-1 accent-accent-gold h-1.5 bg-white/5 rounded-lg appearance-none cursor-pointer"
-              value={wordsPerSecond}
-              onChange={e => setWordsPerSecond(parseFloat(e.target.value))}
-            />
           </div>
-          <p className="text-[10px] text-ink-500 mt-1">
-            {wordsPerSecond >= 4 ? "ULTRA MODE ACTIVATED 🚀" : "Regler für Schreib-Speed"}
-          </p>
-        </div>
-
-        {/* Scaling */}
-        <div>
-          <p className="label">Bildschirm-Skalierung</p>
-          <div className="flex items-center gap-2">
-            <input 
-              type="range" min="1" max="2.5" step="0.25"
-              className="flex-1 accent-accent-gold h-1.5 bg-white/5 rounded-lg appearance-none cursor-pointer"
-              value={scalingFactor}
-              onChange={e => setScalingFactor(parseFloat(e.target.value))}
-            />
-            <span className="text-[11px] font-mono text-ink-300 w-10 text-right">
-              {Math.round(scalingFactor * 100)}%
-            </span>
-          </div>
-          <p className="text-[10px] text-ink-500 mt-1">Standard: 100%. Bei Windows-Skalierung (z.B. 150%) anpassen.</p>
-        </div>
-
-        {/* Info */}
-        <div className="glass rounded-xl p-3 text-[11px] text-ink-400 leading-relaxed">
           <div className="flex gap-2">
             {isPaused ? (
               <button onClick={() => jobId && resumeWrite(jobId)} className="p-1.5 hover:text-apple-system-green transition-colors"><Play size={16} fill="currentColor"/></button>

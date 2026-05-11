@@ -1,5 +1,3 @@
-"""InkFlow v3 — OneNote Writer Engine (Native Win32 Event Rebuild)."""
-
 import math
 import platform
 import random
@@ -76,67 +74,40 @@ _failsafe_lock = threading.Lock()
 input_mgr = InputManager()
 stroke_proc = StrokeProcessor()
 
-# Memory Cache for strokes to avoid repeated skeletonization
-_stroke_cache = {}
-
-# Backward Compatibility Layer for API
-class LegacyPenInjector:
-    def down(self, x: int, y: int, pressure: int = 512):
-        vx, vy, vw, vh = _screen_metrics()
-        if input_mgr.use_pen_injection:
-            input_mgr.down(x, y, pressure=pressure)
-        else:
-            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-            input_mgr.down(ax, ay, pressure=pressure)
-
-    def move(self, x: int, y: int, pressure: int = 512):
-        vx, vy, vw, vh = _screen_metrics()
-        if input_mgr.use_pen_injection:
-            input_mgr.move_to(x, y, pressure=pressure)
-        else:
-            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-            input_mgr.move_to(ax, ay, pressure=pressure)
-
-    def up(self, x: int, y: int):
-        vx, vy, vw, vh = _screen_metrics()
-        if input_mgr.use_pen_injection:
-            input_mgr.up(x, y)
-        else:
-            ax, ay = CoordinateTranslator.normalize_to_win_abs(x, y, vx, vy, vw, vh)
-            input_mgr.up(ax, ay)
-
-
-pen_injector = LegacyPenInjector()
-HAS_PEN_INJECTION = True
-
-
-def get_job(job_id: str) -> Optional[WriteJob]:
-    return _jobs.get(job_id)
-
+# Aliases for API compatibility
+pen_injector = input_mgr
+HAS_PEN_INJECTION = input_mgr.use_pen_injection
 
 def create_job(job_id: str) -> WriteJob:
     job = WriteJob(job_id)
     _jobs[job_id] = job
-    _ensure_failsafe_listener()
     return job
 
+def get_job(job_id: str) -> Optional[WriteJob]:
+    return _jobs.get(job_id)
 
-def _ensure_failsafe_listener():
-    global _failsafe_listener
-    if not HAS_KEYBOARD_FAILSAFE:
-        return
-    with _failsafe_lock:
-        if _failsafe_listener is not None:
-            return
+# Memory Cache for strokes to avoid repeated skeletonization/smoothing
+_stroke_cache = {}
 
-        def on_press(key):
-            if key == keyboard.Key.esc:
-                for running in list(_jobs.values()):
-                    running.cancel()
+def clear_engine_cache():
+    global _stroke_cache
+    _stroke_cache = {}
 
-        _failsafe_listener = keyboard.Listener(on_press=on_press)
-        _failsafe_listener.daemon = True
-        _failsafe_listener.start()
+def _precise_sleep(duration):
+    """High-resolution sleep."""
+    if duration <= 0: return
+    end_time = time.perf_counter() + duration
+    while time.perf_counter() < end_time:
+        if duration > 0.001:
+            time.sleep(0) # Yield for OS efficiency if delay is long
+        pass
+
+
+def scroll_onenote(amount: int):
+    """Scroll OneNote using the mouse wheel. amount in notches (-120 = one notch down)"""
+    if not HAS_NATIVE_EVENTS: return
+    # Send wheel event
+    win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
 
 
 def prepare_onenote() -> bool:
@@ -145,7 +116,6 @@ def prepare_onenote() -> bool:
         return False
 
     target_hwnd = None
-
     def _enum_handler(hwnd, _):
         nonlocal target_hwnd
         title = win32gui.GetWindowText(hwnd) or ""
@@ -160,16 +130,10 @@ def prepare_onenote() -> bool:
         win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
         win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
         win32gui.SetForegroundWindow(target_hwnd)
-        time.sleep(0.1)
+        time.sleep(0.15) # Longer wait for focus
     except Exception:
         return False
     return True
-
-
-def scroll_onenote(amount: int):
-    """Scroll OneNote using the mouse wheel. amount in notches (-120 = one notch down)"""
-    if not HAS_NATIVE_EVENTS: return
-    win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
 
 
 def _screen_metrics():
@@ -182,37 +146,32 @@ def _screen_metrics():
     return vx, vy, max(1, vw), max(1, vh)
 
 
-def extract_stroke_paths(image_path: str, target_w: int, target_h: int) -> list[list[tuple[int, int]]]:
-    # Check cache first
-    cache_key = (image_path, target_w, target_h)
-    if cache_key in _stroke_cache:
-        return _stroke_cache[cache_key]
-
-    try:
-        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            return [_fallback_path(target_w, target_h)]
-
-        if len(img.shape) == 3 and img.shape[2] == 4:
-            mask = img[:, :, 3]
-        else:
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-
-        h, w = mask.shape
-        raw_strokes = _skeleton_to_multi_strokes(_skeletonize((mask > 127).astype(np.uint8)))
-
-        if not raw_strokes:
-            return [_fallback_path(target_w, target_h)]
-
-        final_strokes = []
-        for stroke in raw_strokes:
-            final_strokes.append([(int(x / w * target_w), int(y / h * target_h)) for x, y in stroke])
-
-        _stroke_cache[cache_key] = final_strokes
-        return final_strokes
-    except Exception:
-        return [_fallback_path(target_w, target_h)]
+def _skeleton_to_multi_strokes(skeleton):
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
+    all_strokes = []
+    for label in range(1, num_labels):
+        comp_mask = (labels == label).astype(np.uint8)
+        pts = np.argwhere(comp_mask > 0)
+        if pts.size == 0: continue
+        pts = pts[:, [1, 0]].tolist()
+        MAX_GAP = 5.0
+        while pts:
+            pts.sort(key=lambda p: (p[1], p[0]))
+            current = pts.pop(0)
+            current_stroke = [tuple(current)]
+            while True:
+                if not pts: break
+                pts_arr = np.array(pts)
+                diffs = pts_arr - current
+                sq_dists = np.sum(diffs**2, axis=1)
+                idx = np.argmin(sq_dists)
+                if sq_dists[idx] > MAX_GAP**2: break
+                current = pts.pop(idx)
+                current_stroke.append(tuple(current))
+            if len(current_stroke) >= 1:
+                all_strokes.append(current_stroke)
+    all_strokes.sort(key=lambda s: s[0][0])
+    return all_strokes
 
 
 def _skeletonize(binary_img):
@@ -224,66 +183,36 @@ def _skeletonize(binary_img):
         dilated = cv2.dilate(eroded, kernel)
         skeleton = cv2.bitwise_or(skeleton, cv2.subtract(img, dilated))
         img = eroded.copy()
-        if cv2.countNonZero(img) == 0:
-            break
+        if cv2.countNonZero(img) == 0: break
     return skeleton
 
 
-def _skeleton_to_multi_strokes(skeleton):
-    """
-    ULTRA-ROBUST stroke extraction.
-    Uses connected components to ensure dots are separate.
-    """
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(skeleton, connectivity=8)
+def extract_stroke_paths(image_path: str, target_w: int, target_h: int) -> list[list[tuple[int, int]]]:
+    cache_key = (image_path, target_w, target_h)
+    if cache_key in _stroke_cache: return _stroke_cache[cache_key]
 
-    all_strokes = []
-    for label in range(1, num_labels):
-        comp_mask = (labels == label).astype(np.uint8)
-        pts = np.argwhere(comp_mask > 0) # returns [y, x]
-        if pts.size == 0: continue
+    try:
+        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+        if img is None: return [[(target_w // 2, int(target_h * t)) for t in [0.1, 0.5, 0.9]]]
+        if len(img.shape) == 3 and img.shape[2] == 4: mask = img[:, :, 3]
+        else:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            _, mask = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+        
+        h, w = mask.shape
+        raw_strokes = _skeleton_to_multi_strokes(_skeletonize((mask > 127).astype(np.uint8)))
+        
+        final_strokes = []
+        for stroke in raw_strokes:
+            mapped = [(int(x / w * target_w), int(y / h * target_h)) for x, y in stroke]
+            # LIQUID INK SMOOTHING
+            smoothed = stroke_proc.smooth_stroke_v2(mapped, density=0.8)
+            final_strokes.append(smoothed)
 
-        # Convert to [x, y]
-        pts = pts[:, [1, 0]].tolist()
-
-        MAX_GAP = 7.0
-        while pts:
-            pts.sort(key=lambda p: (p[1], p[0])) # Top to bottom
-            current = pts.pop(0)
-            current_stroke = [tuple(current)]
-
-            while True:
-                if not pts: break
-                # Faster nearest neighbor
-                pts_arr = np.array(pts)
-                diffs = pts_arr - current
-                sq_dists = np.sum(diffs**2, axis=1)
-                idx = np.argmin(sq_dists)
-
-                if sq_dists[idx] > MAX_GAP**2: break
-
-                current = pts.pop(idx)
-                current_stroke.append(tuple(current))
-
-            if len(current_stroke) >= 1:
-                if len(current_stroke) > 25:
-                    step = len(current_stroke) // 25
-                    current_stroke = current_stroke[::step]
-                all_strokes.append(current_stroke)
-
-    all_strokes.sort(key=lambda s: s[0][0])
-    return all_strokes
-
-
-def _fallback_path(w, h):
-    return [(w // 2, int(h * t)) for t in [i / 10 for i in range(11)]]
-
-
-def _precise_sleep(duration):
-    """High-resolution sleep."""
-    if duration <= 0: return
-    end_time = time.perf_counter() + duration
-    while time.perf_counter() < end_time:
-        pass
+        _stroke_cache[cache_key] = final_strokes
+        return final_strokes
+    except Exception:
+        return [[(target_w // 2, int(target_h * t)) for t in [0.1, 0.5, 0.9]]]
 
 
 def _draw_strokes(
@@ -293,59 +222,53 @@ def _draw_strokes(
     translator: CoordinateTranslator,
     origin_x: int,
     origin_y: int,
-    pressure_base: int = 512,
+    pressure_base: int = 700,
 ):
     if not strokes: return
-
     vx, vy, vw, vh = _screen_metrics()
 
     def get_coords(px, py):
         tx, ty = translator.to_windows_coordinates(px, py)
-        if input_mgr.use_pen_injection:
-            return int(tx), int(ty)
+        if input_mgr.use_pen_injection: return int(tx), int(ty)
         return translator.normalize_to_win_abs(tx, ty, vx, vy, vw, vh)
 
-    # SPEED OVERHAUL V8.1
-    is_ultra = words_per_second >= 4.0
-
-    # 5 w/s = 200ms per word = 40ms per char.
-    # If 2 strokes, 20ms per stroke.
-    # If 10 points, 2ms per point.
-    move_delay = 0 if is_ultra else (0.01 / (words_per_second * 5))
-    stroke_gap = 0 if is_ultra else (0.015 / words_per_second)
+    # V3.1 DYNAMIC TIMING
+    is_ultra = words_per_second >= 3.5
+    
+    # Calculate base delays
+    # Normal mode needs some delay for "feel", Ultra mode needs minimal delay
+    move_delay = 0 if is_ultra else (0.005 / words_per_second)
+    stroke_gap = 0.002 if is_ultra else (0.012 / words_per_second)
 
     for stroke in strokes:
         if job.cancelled: break
         if not stroke: continue
 
-        # Reduced point count for speed in Ultra mode
-        num_pts = 2 if is_ultra else 4
-        smoothed = stroke_proc.get_catmull_rom_spline(stroke, num_points=num_pts)
-
         # Pen down
-        fx, fy = get_coords(origin_x + smoothed[0][0], origin_y + smoothed[0][1])
+        fx, fy = get_coords(origin_x + stroke[0][0], origin_y + stroke[0][1])
         input_mgr.down(fx, fy, pressure=pressure_base)
-
-        for i in range(1, len(smoothed)):
+        
+        # Draw points
+        for i in range(1, len(stroke)):
             if job.cancelled: break
-            ax, ay = get_coords(origin_x + smoothed[i][0], origin_y + smoothed[i][1])
+            ax, ay = get_coords(origin_x + stroke[i][0], origin_y + stroke[i][1])
             input_mgr.move_to(ax, ay, pressure=pressure_base)
-            if move_delay > 0.0005: _precise_sleep(move_delay)
+            
+            # Smart skipping for Ultra Mode: avoid too many tiny moves
+            if not is_ultra:
+                if move_delay > 0.0001: _precise_sleep(move_delay)
 
         # Pen up
-        lx, ly = get_coords(origin_x + smoothed[-1][0], origin_y + smoothed[-1][1])
+        lx, ly = get_coords(origin_x + stroke[-1][0], origin_y + stroke[-1][1])
         input_mgr.up(lx, ly)
-        if stroke_gap > 0.0005: _precise_sleep(stroke_gap)
+        if stroke_gap > 0.0001: _precise_sleep(stroke_gap)
 
 
-# Characters that extend BELOW the baseline
-DESCENDERS = set("gjpqyß")
+DESCENDERS = set("gjpqyßÖÄÜöäü")
 
 def _compute_baseline_offset(char: str, char_height: int, variant_baseline: int) -> int:
-    if variant_baseline != 0:
-        return variant_baseline
-    if char in DESCENDERS:
-        return int(char_height * 0.22)
+    if variant_baseline != 0: return variant_baseline
+    if char in DESCENDERS: return int(char_height * 0.25)
     return 0
 
 
@@ -354,12 +277,13 @@ def write_text_to_screen(
     profile,
     calibration,
     text: str,
-    words_per_second: float = 1.0,
+    words_per_second: float = 1.5,
     font_size_scale: float = 1.0,
-    size_variation: float = 0.05,
-    rotation_variation: float = 1.0,
-    vertical_jitter: float = 0.5,
+    size_variation: float = 0.08,
+    rotation_variation: float = 2.0,
+    vertical_jitter: float = 1.5,
     pressure: float = 0.7,
+    scaling_factor: float = 1.0,
     **kwargs
 ):
     if not HAS_NATIVE_EVENTS:
@@ -369,89 +293,100 @@ def write_text_to_screen(
 
     try:
         job.status = "running"
+        clear_engine_cache() # Fresh start for the job
+        
         words = text.split()
-        all_chars = [c for w in words for c in (list(w) + [" "])]
-        job.chars_total = len(all_chars)
-
+        job.chars_total = sum(len(w) for w in words) + len(words) - 1
+        
         translator = CoordinateTranslator(calibration)
-
-        first_line_y = getattr(calibration, "first_line_y", 0)
-        start_x = 0
-        rel_start_y = max(0, first_line_y - calibration.write_area_y) if first_line_y > 0 else 0
-
+        translator.scaling_factor = scaling_factor # DPI FIX
+        
         area_w = calibration.write_area_width
         area_h = calibration.write_area_height
-
+        
+        # V3.1 SMART SPACING
         effective_font_scale = (font_size_scale * 0.38) / max(0.1, calibration.zoom_level)
         line_h = int(calibration.line_height_px * font_size_scale)
-        if line_h <= 0: line_h = 30
-
+        if line_h <= 0: line_h = 35
+        
         char_spacing_base = int(profile.char_spacing * calibration.zoom_level)
-        word_sp = int(profile.word_spacing * effective_font_scale)
+        # Increase word spacing for better readability
+        word_sp = int(max(profile.word_spacing, profile.avg_char_width * 1.2) * effective_font_scale)
 
-        cursor_x = start_x
+        first_line_y = getattr(calibration, "first_line_y", 0)
+        rel_start_y = max(0, first_line_y - calibration.write_area_y) if first_line_y > 0 else 0
+        
+        cursor_x = 0
         cursor_y = rel_start_y - line_h
         job.current_line = 0
-        job.message = f"V8.1 Giga-Speed — {words_per_second} w/s"
+        job.message = f"V3.1 Liquid Ink Engine — {words_per_second} w/s"
 
         if not prepare_onenote():
             job.status = "error"
             job.message = "OneNote window not found!"
             return
         
+        # V3.1 WARM-UP PHASE: Pre-calculate all unique characters in the text
+        job.message = "Preparing ink data..."
+        unique_chars = set(text)
+        for char in unique_chars:
+            if job.cancelled: break
+            if char.strip() and char in profile.characters:
+                variants = profile.characters[char]
+                v = random.choice(variants)
+                extract_stroke_paths(v.image_path, int(v.width * effective_font_scale), int(v.height * effective_font_scale))
+        
         time.sleep(0.1)
-        # Scroll threshold: reached bottom 15%
-        scroll_threshold_y = area_h * 0.85
+        # Scroll threshold: reached bottom 20%
+        scroll_threshold_y = area_h * 0.80
         last_focus_check = time.time()
 
-        for word in words:
+        for word_idx, word in enumerate(words):
             job.wait_if_paused()
             if job.cancelled: break
 
-            # Focused check every few chars or 3 seconds
-            if job.chars_done % 30 == 0:
-                if time.time() - last_focus_check > 3.0:
-                    curr_hwnd = win32gui.GetForegroundWindow()
-                    title = win32gui.GetWindowText(curr_hwnd).lower()
-                    if "onenote" not in title:
-                        job.message = "Focus lost! Pausing..."
-                        job.pause()
-                    last_focus_check = time.time()
+            # Focus failsafe
+            if time.time() - last_focus_check > 4.0:
+                curr_hwnd = win32gui.GetForegroundWindow()
+                if "onenote" not in win32gui.GetWindowText(curr_hwnd).lower():
+                    job.message = "Focus lost! Pausing..."
+                    job.pause()
+                last_focus_check = time.time()
 
+            # Word wrap prediction
             ww = 0
             for char in word:
                 variants = profile.characters.get(char, [])
                 if variants:
-                    v = random.choice(variants)
-                    ww += v.width * effective_font_scale + char_spacing_base
+                    ww += variants[0].width * effective_font_scale + char_spacing_base
                 else:
                     ww += profile.avg_char_width * effective_font_scale + char_spacing_base
 
-            if cursor_x > start_x and cursor_x + ww > start_x + area_w:
-                cursor_x = start_x
+            if cursor_x > 0 and cursor_x + ww > area_w:
+                cursor_x = 0
                 cursor_y += line_h
                 job.current_line += 1
 
                 if cursor_y > scroll_threshold_y:
-                    # SCROLLING IMPROVEMENT
-                    # Scroll down by multiple notches to clear space
-                    scroll_onenote(-360) # 3 notches
-                    time.sleep(0.15)
-                    # We scrolled down, so our relative Y on screen must move UP
-                    # 1 notch is usually approx 3 lines in OneNote.
-                    # This is tricky because notches don't map perfectly to pixels.
-                    # We assume 3 notches = 3-4 lines.
-                    # Let's adjust cursor_y by 3 lines.
-                    cursor_y -= (line_h * 3)
+                    # V3.1 INTELLIGENT SCROLLING
+                    job.message = "Scrolling OneNote..."
+                    # Scroll 5 notches (approx 5-6 lines)
+                    scroll_amount = -600
+                    scroll_onenote(scroll_amount)
+                    
+                    # Pause to allow OneNote to finish scroll animation
+                    time.sleep(0.4) 
+                    
+                    # Recalculate Y. 120 notches is roughly 1-2 lines in OneNote.
+                    # This is an estimate, but with 5 notches we stay safe in the middle.
+                    # We assume 1 notch = 1 line height.
+                    cursor_y -= (line_h * 4) 
+                    job.message = "Writing..."
 
-            for char in word:
+            # Write individual characters
+            for char_idx, char in enumerate(word):
                 job.wait_if_paused()
                 if job.cancelled: break
-
-                if char == " ":
-                    cursor_x += int(profile.avg_char_width * effective_font_scale * 0.6)
-                    job.chars_done += 1
-                    continue
 
                 variants = profile.characters.get(char, [])
                 if not variants:
@@ -461,28 +396,24 @@ def write_text_to_screen(
 
                 variant = random.choice(variants)
                 scale = effective_font_scale * random.uniform(1 - size_variation, 1 + size_variation)
-                cw = int(variant.width * scale)
-                ch = int(variant.height * scale)
+                cw, ch = int(variant.width * scale), int(variant.height * scale)
 
                 baseline_y = cursor_y + line_h
                 baseline_offset = _compute_baseline_offset(char, ch, variant.baseline_offset)
                 y_pos = baseline_y - ch + baseline_offset
+                
+                # Apply vertical jitter
+                y_pos += int(random.uniform(-vertical_jitter, vertical_jitter))
 
-                char_v_jitter = int(random.uniform(-vertical_jitter, vertical_jitter))
-
-                if hasattr(variant, 'strokes') and variant.strokes:
-                    sw, sh = variant.width, variant.height
-                    strokes = [[(int(x / sw * cw), int(y / sh * ch)) for x, y in s] for s in variant.strokes]
-                else:
-                    strokes = extract_stroke_paths(variant.image_path, cw, ch)
-
+                strokes = extract_stroke_paths(variant.image_path, cw, ch)
+                
                 _draw_strokes(
                     job=job,
                     strokes=strokes,
                     words_per_second=words_per_second,
                     translator=translator,
                     origin_x=cursor_x,
-                    origin_y=y_pos + char_v_jitter,
+                    origin_y=y_pos,
                     pressure_base=int(pressure * 1024),
                 )
 
@@ -490,10 +421,11 @@ def write_text_to_screen(
                 job.chars_done += 1
                 job.progress = job.chars_done / max(job.chars_total, 1)
 
+            # End of word: Add word space
             cursor_x += word_sp
 
         job.status = "done" if not job.cancelled else "cancelled"
-        job.message = "Giga-Speed Finish!"
+        job.message = "Finished! ✍️"
     except Exception as exc:
         job.status = "error"
-        job.message = f"Giga-Error: {exc}"
+        job.message = f"Engine Error: {exc}"

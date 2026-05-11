@@ -13,9 +13,22 @@ export default function App() {
   const [online, setOnline] = useState<boolean|null>(null);
 
   useEffect(() => {
-    checkHealth()
-      .then(() => setOnline(true))
-      .catch(() => setOnline(false));
+    let timer: ReturnType<typeof setInterval>;
+    
+    const check = () => {
+      checkHealth()
+        .then(() => {
+          setOnline(true);
+          clearInterval(timer);
+        })
+        .catch(() => {
+          setOnline(false);
+        });
+    };
+
+    check();
+    timer = setInterval(check, 2000);
+    return () => clearInterval(timer);
   }, []);
 
   const render = () => {
