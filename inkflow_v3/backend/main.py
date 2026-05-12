@@ -43,12 +43,14 @@ from api.render      import router as render_router
 from api.export      import router as export_router
 from api.onenote     import router as onenote_router
 from api.calibration import router as calibration_router
+from api.license     import router as license_router
 
 app.include_router(profiles_router,    prefix="/api/profiles")
 app.include_router(render_router,      prefix="/api/render")
 app.include_router(export_router,      prefix="/api/export")
 app.include_router(onenote_router,     prefix="/api/onenote")
 app.include_router(calibration_router, prefix="/api/calibration")
+app.include_router(license_router,     prefix="/api/license")
 
 @app.get("/api/health")
 async def health():

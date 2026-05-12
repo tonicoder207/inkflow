@@ -121,16 +121,28 @@ def prepare_onenote() -> bool:
         title = win32gui.GetWindowText(hwnd) or ""
         if win32gui.IsWindowVisible(hwnd) and "onenote" in title.lower():
             target_hwnd = hwnd
+            return False # Stop searching
+        return True
 
     win32gui.EnumWindows(_enum_handler, None)
     if not target_hwnd:
         return False
 
     try:
-        win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
-        win32gui.ShowWindow(target_hwnd, win32con.SW_MAXIMIZE)
-        win32gui.SetForegroundWindow(target_hwnd)
-        time.sleep(0.15) # Longer wait for focus
+        # Restore if minimized
+        placement = win32gui.GetWindowPlacement(target_hwnd)
+        if placement[1] == win32con.SW_SHOWMINIMIZED:
+            win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
+        
+        win32gui.ShowWindow(target_hwnd, win32con.SW_SHOW)
+        
+        try:
+            win32gui.SetForegroundWindow(target_hwnd)
+        except Exception:
+            # If foregrounding fails, we still continue since we have the handle
+            pass
+            
+        time.sleep(0.3) 
     except Exception:
         return False
     return True

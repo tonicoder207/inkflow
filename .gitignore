@@ -1,0 +1,35 @@
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Node modules
+node_modules/
+dist/
+dist-electron/
+release/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+python_embedded/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Inkflow Specific
+inkflow_v3/{backend/
+inkflow_v3/data/
+backend/db/

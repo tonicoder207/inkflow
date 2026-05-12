@@ -28,10 +28,18 @@ export default function App() {
   useEffect(() => {
     if (!license.key) return;
     checkLicense(license.key).then(res => {
-      if (res.valid) setLicense({ status: "valid", lastChecked: new Date().toISOString() });
-      else if (res.reason !== "Offline") {
+      if (res.valid) {
+        setLicense({ status: "valid", lastChecked: new Date().toISOString() });
+      } else if (res.reason === "Offline") {
+        // Only allow grace period if we are actually offline
         const last = license.lastChecked ? new Date(license.lastChecked) : new Date(0);
-        if ((new Date().getTime() - last.getTime()) / (1000 * 3600 * 24) > 7) setLicense({ status: "invalid" });
+        const daysSinceLastCheck = (new Date().getTime() - last.getTime()) / (1000 * 3600 * 24);
+        if (daysSinceLastCheck > 7) {
+          setLicense({ status: "invalid" });
+        }
+      } else {
+        // Server explicitly said license is invalid (Inactive, Expired, Not found, etc.)
+        setLicense({ status: "invalid" });
       }
     });
   }, [license.key]);

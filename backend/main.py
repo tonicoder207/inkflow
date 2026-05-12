@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -9,6 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = FastAPI(title="InkFlow License API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Supabase setup
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -94,6 +103,29 @@ async def create_license(data: LicenseCreate):
     key = data.license_key or f"INK-{secrets.token_hex(4).upper()}-{secrets.token_hex(4).upper()}"
     res = supabase.table("licenses").insert({"license_key": key, "expires_at": data.expires_at.isoformat() if data.expires_at else None, "max_devices": data.max_devices, "license_type": data.license_type, "notes": data.notes}).execute()
     return res.data[0]
+
+class LicenseStatusUpdate(BaseModel):
+    status: str
+
+@app.put("/admin/licenses/{license_id}/status", dependencies=[Depends(verify_admin_token)])
+async def update_license_status(license_id: str, data: LicenseStatusUpdate):
+    res = supabase.table("licenses").update({"status": data.status}).eq("id", license_id).execute()
+    return res.data[0] if res.data else {"error": "License not found"}
+
+@app.delete("/admin/licenses/{license_id}", dependencies=[Depends(verify_admin_token)])
+async def delete_license(license_id: str):
+    res = supabase.table("licenses").delete().eq("id", license_id).execute()
+    return {"status": "deleted"}
+
+@app.get("/admin/devices", dependencies=[Depends(verify_admin_token)])
+async def list_devices():
+    res = supabase.table("devices").select("*, licenses(license_key, license_type)").order("created_at", desc=True).execute()
+    return res.data
+
+@app.delete("/admin/devices/{device_id}", dependencies=[Depends(verify_admin_token)])
+async def delete_device(device_id: str):
+    res = supabase.table("devices").delete().eq("id", device_id).execute()
+    return {"status": "deleted"}
 
 if __name__ == "__main__":
     import uvicorn
